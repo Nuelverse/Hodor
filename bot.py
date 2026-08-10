@@ -76,7 +76,17 @@ class SecurityBot(discord.Bot):
         intents.messages = True
         intents.message_content = True  # Privileged — must be enabled in Dev Portal
         debug_guild = int(os.getenv('DEBUG_GUILD_ID', 0)) or None
-        super().__init__(intents=intents, debug_guilds=[debug_guild] if debug_guild else None)
+        # max_messages controls how many recent messages stay in memory. Only
+        # cached messages can be logged WITH their content when deleted, so the
+        # default of 1000 meant losing the text of anything slightly older.
+        # 5000 costs a few MB and buys a much longer window; deletions beyond it
+        # are still recorded by the raw handlers in cogs/audit.py, just without
+        # the content Discord no longer has.
+        super().__init__(
+            intents=intents,
+            debug_guilds=[debug_guild] if debug_guild else None,
+            max_messages=5000,
+        )
         self.config = config
         self.master_user = master_user
         self.CONN = None

@@ -2,13 +2,28 @@
 Audit Log — logs deleted/edited messages and member bans to the guild log channel.
 
 Events handled:
-  on_message_delete  →  embed with author, channel, message ID, and content
-  on_message_edit    →  embed with author, channel, before/after content diff, jump link
-  on_member_ban      →  embed with banned user, responsible mod, and audit-log reason
+  on_message_delete      →  full embed: author, channel, message ID, content
+  on_message_edit        →  full embed: before/after diff, jump link
+  on_raw_message_delete  →  fallback for messages Discord never cached
+  on_raw_bulk_message_delete → purges / bulk deletions
+  on_member_ban          →  banned user, responsible mod, audit-log reason
 
-Note: Discord only provides message content from its internal cache.
-Messages sent before the bot started (or in large guilds where the cache
-is evicted) will show "(not cached)" for the content.
+THE CACHE PROBLEM
+-----------------
+on_message_delete only fires for messages in the bot's in-memory cache — which
+holds roughly the last 1000 messages it has SEEN SINCE IT STARTED. Delete a
+message older than that (or anything sent before the last restart) and Discord
+dispatches on_raw_message_delete instead; on_message_delete never runs at all.
+
+This used to mean older deletions were logged as nothing whatsoever, which is
+exactly backwards for a security bot: quietly removing an old message is more
+suspicious than deleting a fresh one, not less.
+
+The raw handlers below close that gap. They cannot recover the content —
+Discord does not keep it, and neither do we — but they record that a deletion
+happened, where, and (where Discord's audit log exposes it) who did it. A
+raw handler skips anything already covered by the cached handler, so nothing
+is logged twice.
 """
 
 import asyncio
@@ -84,6 +99,100 @@ class AuditLog(commands.Cog):
 
         embed.timestamp = discord.utils.utcnow()
         embed.set_footer(text=f"Guild: {message.guild.name}")
+        await self._safe_send(log_ch, embed=embed)
+
+    # ------------------------------------------------------------------
+    # Deleted messages Discord never cached (older than the bot's memory)
+    # ------------------------------------------------------------------
+
+    async def _find_deleter(self, guild: discord.Guild, channel_id: int):
+        """
+        Best-effort attribution for a deletion.
+
+        Discord only writes an audit-log entry when someone deletes SOMEONE
+        ELSE'S message. A member removing their own post produces nothing, so
+        "Unknown" here genuinely means "self-deleted, or Discord didn't say".
+        """
+        try:
+            async for entry in guild.audit_logs(limit=5,
+                                                action=discord.AuditLogAction.message_delete):
+                extra_channel = getattr(entry.extra, "channel", None)
+                if extra_channel is not None and extra_channel.id != channel_id:
+                    continue
+                age = (discord.utils.utcnow() - entry.created_at).total_seconds()
+                if age < 10:  # only trust a very recent entry
+                    return f"{entry.user.mention} | `{entry.user.id}`"
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+        return None
+
+    @commands.Cog.listener()
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent):
+        # Cached messages are handled by on_message_delete with full content.
+        if payload.cached_message is not None:
+            return
+        if payload.guild_id is None:
+            return
+        if payload.message_id in self.bot.deleted_by_filter:
+            self.bot.deleted_by_filter.discard(payload.message_id)
+            return
+        if not db_handler.check_guild(self.bot.CONN, payload.guild_id):
+            return
+
+        log_ch = self._get_log_ch(payload.guild_id)
+        if not log_ch:
+            return
+
+        guild = self.bot.get_guild(payload.guild_id)
+        channel = self.bot.get_channel(payload.channel_id)
+        await asyncio.sleep(1)  # let Discord's audit log populate
+        deleter = await self._find_deleter(guild, payload.channel_id) if guild else None
+
+        embed = discord.Embed(title="Message Deleted (older message)", color=0xe67e22)
+        embed.add_field(
+            name="Channel",
+            value=f"{channel.mention} | `{payload.channel_id}`" if channel else f"`{payload.channel_id}`",
+            inline=False)
+        embed.add_field(name="Message ID", value=f"`{payload.message_id}`", inline=True)
+        embed.add_field(name="Deleted By", value=deleter or "Unknown (likely self-deleted)", inline=True)
+        embed.add_field(
+            name="Content",
+            value="*Unavailable — this message predates the bot's cache. "
+                  "Discord does not retain deleted content.*",
+            inline=False)
+        embed.timestamp = discord.utils.utcnow()
+        embed.set_footer(text=f"Guild: {guild.name}" if guild else "")
+        await self._safe_send(log_ch, embed=embed)
+
+    @commands.Cog.listener()
+    async def on_raw_bulk_message_delete(self, payload: discord.RawBulkMessageDeleteEvent):
+        """A purge. Worth one summary rather than N entries."""
+        if payload.guild_id is None:
+            return
+        if not db_handler.check_guild(self.bot.CONN, payload.guild_id):
+            return
+        log_ch = self._get_log_ch(payload.guild_id)
+        if not log_ch:
+            return
+
+        guild = self.bot.get_guild(payload.guild_id)
+        channel = self.bot.get_channel(payload.channel_id)
+        cached = len(payload.cached_messages)
+
+        embed = discord.Embed(title="Bulk Message Deletion", color=0xe74c3c)
+        embed.add_field(
+            name="Channel",
+            value=f"{channel.mention} | `{payload.channel_id}`" if channel else f"`{payload.channel_id}`",
+            inline=False)
+        embed.add_field(name="Messages Removed", value=str(len(payload.message_ids)), inline=True)
+        embed.add_field(name="Content Recoverable", value=f"{cached} of {len(payload.message_ids)}", inline=True)
+        if cached:
+            preview = "\n".join(
+                f"{m.author}: {(m.content or '(no text)')[:80]}"
+                for m in list(payload.cached_messages)[:5])
+            embed.add_field(name="Sample", value=f"```{preview[:900]}```", inline=False)
+        embed.timestamp = discord.utils.utcnow()
+        embed.set_footer(text=f"Guild: {guild.name}" if guild else "")
         await self._safe_send(log_ch, embed=embed)
 
     # ------------------------------------------------------------------

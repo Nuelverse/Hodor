@@ -155,6 +155,8 @@ Send, edit, and delete rich embeds as the bot from within Discord — no dashboa
 Structured embed logs posted to your configured log channel for every security event:
 
 - Message deletions by link filter (with full message content)
+- Message deletions and edits, including older messages the bot never cached (logged without content — Discord does not retain it)
+- Bulk deletions / purges, as a single summary
 - Link whitelist changes
 - Webhook activity
 - 2FA events (setup, verify, reset)
