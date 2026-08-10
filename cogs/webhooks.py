@@ -14,12 +14,23 @@ temporary disable window before deciding to delete a webhook.
 import discord
 from discord.ext import commands, tasks
 from discord.commands import Option
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import time
 import db_handler
 import two_factor_helper
 import permissions
 import logger
+
+
+def _utcnow_naive() -> datetime:
+    """
+    Current UTC time as a naive datetime.
+
+    datetime.utcnow() is deprecated from Python 3.12, but the temp-disable
+    window is stored as a naive ISO string, so we keep producing naive values
+    rather than breaking comparisons against rows already in the database.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class Webhooks(commands.Cog):
@@ -47,14 +58,14 @@ class Webhooks(commands.Cog):
             except ValueError:
                 db_handler.clear_webhook_temp_disable(self.bot.CONN, guild.id)
                 continue
-            if datetime.utcnow() >= expires_at:
+            if _utcnow_naive() >= expires_at:
                 db_handler.clear_webhook_temp_disable(self.bot.CONN, guild.id)
                 log_ch = logger.get_log_channel(self.bot, guild)
                 embed = discord.Embed(
                     title="Webhook Protection Re-enabled",
                     description="The 30-minute webhook allow window has expired. Protection is active again.",
                     color=0x2ecc71,
-                    timestamp=datetime.utcnow()
+                    timestamp=_utcnow_naive()
                 )
                 await logger.safe_send(log_ch, embed=embed)
 
@@ -67,7 +78,7 @@ class Webhooks(commands.Cog):
     # ------------------------------------------------------------------
 
     def _build_log_embed(self, color: int, user, channel, action: str) -> discord.Embed:
-        embed = discord.Embed(title="Webhook Event", color=color, timestamp=datetime.utcnow())
+        embed = discord.Embed(title="Webhook Event", color=color, timestamp=_utcnow_naive())
         embed.add_field(
             name="Created By",
             value=f"{user.name} ({user.id})" if user else "Unknown",
@@ -97,7 +108,7 @@ class Webhooks(commands.Cog):
         expires_str = db_handler.get_webhook_temp_disable(self.bot.CONN, guild.id)
         if expires_str:
             try:
-                if datetime.utcnow() < datetime.fromisoformat(expires_str):
+                if _utcnow_naive() < datetime.fromisoformat(expires_str):
                     log_ch = logger.get_log_channel(self.bot, guild)
                     await logger.safe_send(log_ch, embed=self._build_log_embed(
                         0x3498db, None, channel,
@@ -121,40 +132,47 @@ class Webhooks(commands.Cog):
         if not webhooks:
             return
 
-        recent = webhooks[-1]
+        # Examine EVERY webhook created inside the window, not just webhooks[-1].
+        # Discord does not guarantee this list is ordered by creation time, and
+        # an attacker creating several webhooks in one burst previously had all
+        # but one survive.
+        cutoff = time.time() - 120
+        verified_bots_allowed = db_handler.check_verified_bots(self.bot.CONN, guild.id)
 
-        # Only process webhooks created within the last 120 seconds
-        if recent.created_at.timestamp() < (time.time() - 120):
-            return
+        recent_webhooks = [
+            wh for wh in webhooks
+            if wh.created_at is not None
+            and wh.created_at.timestamp() >= cutoff
+            # Ignore channel follows (Discord-native, not user-created)
+            and wh.type != discord.WebhookType.channel_follower
+        ]
 
-        # Ignore channel follows (Discord-native, not user-created)
-        if recent.type == discord.WebhookType.channel_follower:
-            return
-
-        # Allow verified-bot webhooks if the bypass is enabled
-        if db_handler.check_verified_bots(self.bot.CONN, guild.id):
-            if recent.user and recent.user.public_flags.verified_bot:
+        for webhook in recent_webhooks:
+            # Allow verified-bot webhooks if the bypass is enabled
+            if verified_bots_allowed and webhook.user and webhook.user.public_flags.verified_bot:
                 await logger.safe_send(log_ch, embed=self._build_log_embed(
-                    0x2ecc71, recent.user, channel,
+                    0x2ecc71, webhook.user, channel,
                     "Verified bot webhook — allowed (bypass enabled)."
                 ))
-                return
+                continue
 
-        try:
-            await recent.delete(reason="Webhook protection enabled.")
-        except discord.Forbidden:
+            try:
+                await webhook.delete(reason="Webhook protection enabled.")
+            except discord.NotFound:
+                continue  # Already gone.
+            except (discord.Forbidden, discord.HTTPException):
+                await logger.safe_send(log_ch, embed=self._build_log_embed(
+                    0xe74c3c, webhook.user if webhook.user else None, channel,
+                    "Failed to delete webhook — missing permissions."
+                ))
+                continue
+
             await logger.safe_send(log_ch, embed=self._build_log_embed(
-                0xe74c3c, recent.user if recent.user else None, channel,
-                "Failed to delete webhook — missing permissions."
+                0xf1c40f,
+                webhook.user if webhook.user else None,
+                channel,
+                f"Unauthorized webhook deleted (ID: {webhook.id})."
             ))
-            return
-
-        await logger.safe_send(log_ch, embed=self._build_log_embed(
-            0xf1c40f,
-            recent.user if recent.user else None,
-            channel,
-            f"Unauthorized webhook deleted (ID: {recent.id})."
-        ))
 
     # ------------------------------------------------------------------
     # /allow-webhook  (bot owner + 2FA)
@@ -163,11 +181,11 @@ class Webhooks(commands.Cog):
     @commands.guild_only()
     @commands.slash_command(
         name="allow-webhook",
-        description="[Bot Owner] Temporarily disable webhook protection for 30 minutes. Requires 2FA."
+        description="[Owner] Temporarily disable webhook protection for 30 minutes. Requires 2FA."
     )
     async def allow_webhook(self, ctx: discord.ApplicationContext,
                             code: Option(int, "Your 6-digit 2FA code", required=True)):
-        allowed, err = permissions.check(self.bot, ctx, 'bot_owner')
+        allowed, err = permissions.check(self.bot, ctx, 'owner')
         if not allowed:
             await ctx.respond(err, ephemeral=True)
             return
@@ -181,7 +199,7 @@ class Webhooks(commands.Cog):
             await ctx.respond("Incorrect 2FA code.", ephemeral=True)
             return
 
-        expires_at = datetime.utcnow() + timedelta(minutes=30)
+        expires_at = _utcnow_naive() + timedelta(minutes=30)
         db_handler.set_webhook_temp_disable(
             self.bot.CONN, ctx.guild.id, ctx.author.id, expires_at.isoformat()
         )

@@ -14,7 +14,6 @@ The scanner runs on every message and every edit across all configured guilds.
 import discord
 from discord.ext import commands
 from discord.commands import Option
-from datetime import datetime
 import db_handler
 import two_factor_helper
 import permissions
@@ -158,10 +157,7 @@ class LinkFilter(commands.Cog):
 
         # Legacy config-based role bypass
         ignore_ids = self.bot.config.get("link_filter", {}).get("ignore_roles", [])
-        if any(r.id in ignore_ids for r in message.author.roles):
-            return True
-
-        return False
+        return any(r.id in ignore_ids for r in message.author.roles)
 
     def _filter_active(self, guild_id: int) -> bool:
         return (
@@ -292,11 +288,11 @@ class LinkFilter(commands.Cog):
     @commands.guild_only()
     @commands.slash_command(
         name="toggle-linkfilter",
-        description="[Bot Owner] Toggle link filtering on or off for this server. Requires 2FA."
+        description="[Owner] Toggle link filtering on or off for this server. Requires 2FA."
     )
     async def toggle_linkfilter(self, ctx: discord.ApplicationContext,
                                 code: Option(int, "Your 6-digit 2FA code", required=True)):
-        allowed, err = permissions.check(self.bot, ctx, 'bot_owner')
+        allowed, err = permissions.check(self.bot, ctx, 'owner')
         if not allowed:
             await ctx.respond(err, ephemeral=True)
             return

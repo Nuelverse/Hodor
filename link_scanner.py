@@ -108,7 +108,13 @@ def _proto_normalize(text: str) -> str:
     text = _LOOKALIKE_SLASHES.sub("/", text)
     text = _LOOKALIKE_COLONS.sub(":", text)
     text = text.replace("\\", "/")
-    text = re.sub(r"([a-zA-Z][a-zA-Z0-9+\-.]+:)/{3,}", r"\1//", text, flags=re.IGNORECASE)
+    # Scheme length is bounded ({0,20}) on purpose. With an unbounded '+' this
+    # sub is quadratic: on a long run of letters the greedy class consumes the
+    # rest of the string, fails to find ':', then backtracks one character at a
+    # time — from every starting position. A 4000-character message took 166ms
+    # and 8000 took 664ms, all of it blocking the event loop. Real schemes are
+    # a handful of characters, so the cap costs nothing.
+    text = re.sub(r"([a-zA-Z][a-zA-Z0-9+\-.]{0,20}:)/{3,}", r"\1//", text, flags=re.IGNORECASE)
     for _ in range(3):
         decoded = unquote(text)
         if decoded == text:
@@ -137,7 +143,13 @@ def _deep_normalize(text: str) -> str:
     text = _LOOKALIKE_COLONS.sub(":", text)
     text = re.sub(r"\s+", "", text)
     text = text.replace("\\", "/")
-    text = re.sub(r"([a-zA-Z][a-zA-Z0-9+\-.]+:)/{3,}", r"\1//", text, flags=re.IGNORECASE)
+    # Scheme length is bounded ({0,20}) on purpose. With an unbounded '+' this
+    # sub is quadratic: on a long run of letters the greedy class consumes the
+    # rest of the string, fails to find ':', then backtracks one character at a
+    # time — from every starting position. A 4000-character message took 166ms
+    # and 8000 took 664ms, all of it blocking the event loop. Real schemes are
+    # a handful of characters, so the cap costs nothing.
+    text = re.sub(r"([a-zA-Z][a-zA-Z0-9+\-.]{0,20}:)/{3,}", r"\1//", text, flags=re.IGNORECASE)
     for _ in range(3):
         decoded = unquote(text)
         if decoded == text:
@@ -163,6 +175,18 @@ def _normalize_url(url: str) -> str:
     return url
 
 
+def _strip_www(host: str) -> str:
+    """
+    Remove a leading 'www.' prefix.
+
+    NOTE: do NOT use str.lstrip("www.") here — lstrip removes any leading
+    characters that appear in the set {'w', '.'}, not the literal prefix.
+    That turned a whitelist entry like 'web.com' into 'eb.com', which then
+    matched any subdomain of eb.com and allowed unrelated hosts through.
+    """
+    return host[4:] if host.lower().startswith("www.") else host
+
+
 def is_allowed(url: str, whitelist: list[tuple[str, str]]) -> bool:
     """
     Check if a URL is allowed by the whitelist.
@@ -186,11 +210,18 @@ def is_allowed(url: str, whitelist: list[tuple[str, str]]) -> bool:
         entry_norm = _normalize_url(entry_url)
         try:
             entry_parsed = urlparse(entry_norm)
-        except Exception:  # nosec B112 — skip malformed whitelist entries gracefully
+        except Exception as e:
+            # Skip malformed whitelist entries rather than failing the whole
+            # scan — but say so, otherwise a broken entry silently stops
+            # protecting the domain it was meant to allow.
+            print(f"[link_scanner] Ignoring malformed whitelist entry {entry_url!r}: {e}")
             continue
 
-        entry_host = entry_parsed.netloc.lstrip("www.").split(":")[0]
-        incoming_host = netloc.lstrip("www.")
+        entry_host = _strip_www(entry_parsed.netloc.split(":")[0]).lower()
+        incoming_host = _strip_www(netloc).lower()
+
+        if not entry_host:
+            continue
 
         if entry_type == "domain":
             if incoming_host == entry_host or incoming_host.endswith("." + entry_host):
@@ -206,10 +237,7 @@ def has_bad_protocol(text: str) -> bool:
     """Check for known-bad protocols or any non-http protocol:// in text."""
     if _NON_HTTP_URL.search(text):
         return True
-    for m in _PROTO_RE.finditer(text):
-        if m.group(1).lower() in _BAD_PROTOCOLS:
-            return True
-    return False
+    return any(m.group(1).lower() in _BAD_PROTOCOLS for m in _PROTO_RE.finditer(text))
 
 
 # ---------------------------------------------------------------------------

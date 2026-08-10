@@ -14,11 +14,8 @@
 # Logs
 *.log
 
-# QR codes (generated at runtime)
+# Legacy QR code PNGs (new setups render in memory and never write to disk)
 data/*.png
-
-# Orphaned assets from unused features
-data/quiz_images/
 
 # Python
 __pycache__/
@@ -42,8 +39,18 @@ env/
 # Claude Code local settings
 .claude/
 
-# Testing cache
+# Tooling caches / reports
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Scratch files
+*.tmp
+*.tmp.txt
+captcha-example.png
+sample_*.png
 
 # Reference repos 
 HQ-Announce/

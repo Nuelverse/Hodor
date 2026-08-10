@@ -168,6 +168,16 @@ class BulkRoleModal(discord.ui.Modal):
             )
             return
 
+        # Same hierarchy guard /role applies: without it every add_roles call
+        # below fails one by one with a Forbidden that looks like a bot bug.
+        me = self.guild.me
+        if me is not None and role >= me.top_role:
+            await interaction.response.send_message(
+                f"**{role.name}** is above my highest role. I cannot assign it.",
+                ephemeral=True,
+            )
+            return
+
         raw_list = raw_ids.replace(",", "\n").splitlines()
         user_ids = [int(r.strip()) for r in raw_list if r.strip().isdigit()]
 
@@ -424,11 +434,11 @@ class Moderation(commands.Cog):
         if currently_hidden:
             current.view_channel = None
             old_str, new_str = "Hidden", "Visible"
-            log_action = "Unhid channel for role"
+            action_label = "Unhid channel for role"
         else:
             current.view_channel = False
             old_str, new_str = "Visible", "Hidden"
-            log_action = "Hid channel from role"
+            action_label = "Hid channel from role"
 
         try:
             await channel.set_permissions(role, overwrite=current, reason=f"/toggle-channel by {ctx.author}")
@@ -445,6 +455,7 @@ class Moderation(commands.Cog):
             details={
                 "Channel": channel.name,
                 "Role": role.name,
+                "Action": action_label,
                 "Previous": old_str,
                 "New State": new_str,
             },
@@ -824,7 +835,7 @@ class Moderation(commands.Cog):
         if not has_cat_data:
             ws2.cell(2, 1, "No role overrides found on any category.")
 
-        for col_letter, width in zip("ABCD", [25, 22, 28, 12]):
+        for col_letter, width in zip("ABCD", [25, 22, 28, 12], strict=True):
             ws2.column_dimensions[col_letter].width = width
 
         # ── Sheet 3: Channel Overrides ─────────────────────────────────────
@@ -869,7 +880,7 @@ class Moderation(commands.Cog):
         if not has_ch_data:
             ws3.cell(2, 1, "No role overrides found on any channel.")
 
-        for col_letter, width in zip("ABCDEF", [25, 10, 22, 22, 28, 12]):
+        for col_letter, width in zip("ABCDEF", [25, 10, 22, 22, 28, 12], strict=True):
             ws3.column_dimensions[col_letter].width = width
 
         # ── Send file ──────────────────────────────────────────────────────

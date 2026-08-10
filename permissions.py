@@ -1,16 +1,33 @@
 """
 Permission helpers for SecurityBot.
 
-Hierarchy (highest to lowest):
-  BOT_OWNER   — MASTER_USER_ID in .env; cross-server + all destructive commands
-  SERVER_OWNER — guild.owner_id; full per-server management
-  LINK_MANAGER — registered + 2FA verified + in link_managers table
+THE MODEL — "locksmith, not landlord"
+-------------------------------------
+The bot is designed to run in servers its operator does not own, so authority
+is split by *scope* rather than by seniority:
+
+  GLOBAL OPERATOR (MASTER_USER_ID in .env)
+      The person who hosts the bot. Holds the emergency hatch — panic and
+      recover by DM — so a server can be rescued even after the operator has
+      been kicked from it (the bot only needs to still be in the guild; the
+      operator does not). Deliberately NOT the day-to-day authority: a client
+      must never depend on the operator being awake to run their own server.
+
+  SERVER OWNER (guild.owner_id)
+      Full authority over their own server: setup, configuration, granting
+      keycards, and the destructive commands. Everything needed to operate
+      without the global operator.
+
+  LINK MANAGER — registered + 2FA verified + in link_managers table
   ANNOUNCER    — registered + 2FA verified + in trusted_members table
 
 Rules:
   - No user can run a command unless they are at least one of the above.
   - /create-2fa is available to bot owner, server owner, or any registered user.
   - 2FA is required for all security-sensitive operations.
+  - The global operator also passes every 'owner' check, so it can still
+    support a server hands-on when asked. The difference is that the server
+    owner is never blocked waiting for it.
 """
 
 import db_handler
@@ -71,7 +88,9 @@ def check(bot, ctx, level: str) -> tuple[bool, str]:
     Central permission gate. Returns (allowed, error_message).
 
     Levels:
-      'bot_owner'      — MASTER_USER_ID only, 2FA required
+      'bot_owner'      — MASTER_USER_ID only, 2FA required. Reserved for the
+                         emergency hatch; prefer 'owner' so a server is never
+                         blocked waiting for the global operator.
       'owner'          — bot owner OR server owner, 2FA required
       'owner_no_2fa'   — bot owner OR server owner, no 2FA check
       'link_manager'   — link managers + elevated users, 2FA required

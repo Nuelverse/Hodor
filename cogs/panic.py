@@ -9,9 +9,9 @@ Commands:
   /recover  — Bot owner: restore the server from the most recent panic backup.
               Requires 2FA.
 
-DM trigger:
-  If the bot owner is kicked from the server, they can DM the bot:
-    panic <guild_id> <6-digit-2fa-code>
+DM triggers (for when the bot owner has been kicked from the server):
+    panic <guild_id> <6-digit-2fa-code> CONFIRM LOCKDOWN
+    recover-panic <guild_id> <6-digit-2fa-code>
 
 WARNING: /panic is destructive and irreversible without /recover.
 """
@@ -160,8 +160,9 @@ class Panic(commands.Cog):
                     await event.delete()
                 except (discord.Forbidden, discord.HTTPException):
                     pass
-        except Exception:  # nosec B110 — scheduled events are non-critical during panic
-            pass
+        except Exception as e:
+            # Scheduled events are non-critical during a lockdown — log and move on.
+            print(f"[panic] Could not clear scheduled events for {guild.id}: {e}")
 
         # Phase 4: Lock all channels
         channel_errors = 0
@@ -275,10 +276,12 @@ class Panic(commands.Cog):
     @commands.guild_only()
     @commands.cooldown(1, 10, commands.BucketType.user)
     @commands.slash_command(
-        description="[Bot Owner] EMERGENCY: Lock down the entire server. Opens a confirmation modal."
+        description="[Owner] EMERGENCY: Lock down the entire server. Opens a confirmation modal."
     )
     async def panic(self, ctx: discord.ApplicationContext):
-        allowed, err = permissions.check(self.bot, ctx, 'bot_owner')
+        # Server owner too: it is their server and their emergency. The global
+        # operator keeps the DM hatch for when nobody can reach a slash command.
+        allowed, err = permissions.check(self.bot, ctx, 'owner')
         if not allowed:
             await ctx.respond(err, ephemeral=True)
             return
@@ -305,11 +308,11 @@ class Panic(commands.Cog):
     @commands.guild_only()
     @commands.cooldown(1, 10, commands.BucketType.user)
     @commands.slash_command(
-        description="[Bot Owner] Recover server permissions from the most recent backup. Requires 2FA."
+        description="[Owner] Recover server permissions from the most recent backup. Requires 2FA."
     )
     async def recover(self, ctx: discord.ApplicationContext,
                       code: Option(int, "Your 6-digit 2FA code", required=True)):
-        allowed, err = permissions.check(self.bot, ctx, 'bot_owner')
+        allowed, err = permissions.check(self.bot, ctx, 'owner')
         if not allowed:
             await ctx.respond(err, ephemeral=True)
             return
@@ -395,7 +398,73 @@ class Panic(commands.Cog):
 
         await message.channel.send(f"Initiating panic lockdown for **{guild.name}**...")
         await self._execute_panic(guild, message.author)
-        await message.channel.send("Panic lockdown complete.")
+        await message.channel.send(
+            "Panic lockdown complete.\n"
+            f"To restore later, DM: `recover-panic {guild_id} <6-digit-2fa-code>`"
+        )
+
+    # ------------------------------------------------------------------
+    # DM trigger: recover-panic <guild_id> <code>
+    # ------------------------------------------------------------------
+
+    @commands.Cog.listener("on_message")
+    async def on_dm_recover_panic(self, message: discord.Message):
+        """
+        Restore a locked-down server from a DM.
+
+        The documented reason to trigger panic by DM is that the owner was
+        kicked from the server — but /recover is guild-only, so without this
+        the escape hatch had no exit and the server stayed locked.
+        """
+        if message.guild is not None or message.author.bot:
+            return
+        if message.author.id != self.bot.master_user:
+            return
+
+        content = message.content.strip()
+        if not content.lower().startswith("recover-panic "):
+            return
+
+        parts = content.split()
+        if len(parts) < 3:
+            await message.channel.send("Format: `recover-panic <guild_id> <6-digit-2fa-code>`")
+            return
+
+        try:
+            guild_id = int(parts[1])
+            code = int(parts[2])
+        except ValueError:
+            await message.channel.send("Invalid guild ID or code format.")
+            return
+
+        guild = self.bot.get_guild(guild_id)
+        if guild is None:
+            await message.channel.send("Bot is not in that server or invalid guild ID.")
+            return
+
+        if not db_handler.check_guild(self.bot.CONN, guild_id):
+            await message.channel.send("That server is not set up with this bot.")
+            return
+
+        if not two_factor_helper.verify_code(self.bot.CONN, message.author.id, code):
+            await message.channel.send("Incorrect 2FA code.")
+            return
+
+        if not db_handler.get_panic_active(self.bot.CONN, guild_id):
+            await message.channel.send("That server is not currently in panic lockdown.")
+            return
+
+        await message.channel.send(f"Restoring **{guild.name}** from the most recent backup...")
+        restored = await self._execute_recover(guild, message.author)
+        if restored:
+            await message.channel.send(
+                "Recovery complete. Note: deleted webhooks must be re-added manually."
+            )
+        else:
+            await message.channel.send(
+                "No backup data found — role permissions and channel overwrites "
+                "must be reconfigured manually."
+            )
 
 
 def setup(bot):

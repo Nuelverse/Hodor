@@ -39,7 +39,7 @@ class Admin(commands.Cog):
     @commands.cooldown(1, 5, commands.BucketType.user)
     @commands.slash_command(
         name="setup-guild",
-        description="[Bot Owner] Initialize this server with the bot. Run once. Requires 2FA."
+        description="[Owner] Initialize this server with the bot. Run once. Requires 2FA."
     )
     async def setup_guild(
         self, ctx: discord.ApplicationContext,
@@ -47,7 +47,9 @@ class Admin(commands.Cog):
         announcement_channel: Option(discord.abc.GuildChannel, "Initial announcement channel", required=True),
         code: Option(int, "Your 6-digit 2FA code", required=True)
     ):
-        allowed, err = permissions.check(self.bot, ctx, 'bot_owner')
+        # Server owner, not just the global operator: a client must be able to
+        # set up their own server without waiting on whoever hosts the bot.
+        allowed, err = permissions.check(self.bot, ctx, 'owner')
         if not allowed:
             await ctx.respond(err, ephemeral=True)
             return
@@ -320,13 +322,13 @@ class Admin(commands.Cog):
     @commands.cooldown(1, 5, commands.BucketType.user)
     @commands.slash_command(
         name="change-timeout",
-        description="[Bot Owner] Change the announcement permission lifetime in seconds. Requires 2FA."
+        description="[Owner] Change the announcement permission lifetime in seconds. Requires 2FA."
     )
     async def change_timeout(self, ctx: discord.ApplicationContext,
                              seconds: Option(int, "Timeout in seconds (30–3600)", required=True,
                                             min_value=30, max_value=3600),
                              code: Option(int, "Your 6-digit 2FA code", required=True)):
-        allowed, err = permissions.check(self.bot, ctx, 'bot_owner')
+        allowed, err = permissions.check(self.bot, ctx, 'owner')
         if not allowed:
             await ctx.respond(err, ephemeral=True)
             return

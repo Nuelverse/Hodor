@@ -71,6 +71,7 @@ async def log_action(
     actor: discord.Member | discord.User,
     details: dict = None,
     level: str = 'info',
+    channel=None,
 ):
     """
     Send a standardized audit embed to the guild's log channel.
@@ -82,8 +83,13 @@ async def log_action(
         actor:   The user who performed the action.
         details: Optional dict of field_name -> field_value pairs.
         level:   One of 'info', 'success', 'warning', 'error', 'critical'.
+        channel: Optional destination override. Used by verification so join
+                 traffic can go to its own channel — a steady trickle of
+                 "member verified" is a different audience from the security
+                 log, and mixing them buries the entries that matter. Falls
+                 back to the guild's configured log channel when None.
     """
-    log_ch = get_log_channel(bot, guild)
+    log_ch = channel or get_log_channel(bot, guild)
     if not log_ch:
         return
 

@@ -26,101 +26,29 @@ def in_memory_db():
     Each test gets a completely fresh database.
     """
     conn = sqlite3.connect(":memory:")
-    conn.execute("PRAGMA foreign_keys=ON")
 
-    # Run the same table creation as startup_db but against in-memory DB
-    tables = [
-        """CREATE TABLE IF NOT EXISTS users (
-            user_id  INTEGER PRIMARY KEY,
-            secret   TEXT NOT NULL,
-            verified INTEGER NOT NULL CHECK (verified IN (0,1))
-        )""",
-        """CREATE TABLE IF NOT EXISTS guilds (
-            guild_id             INTEGER PRIMARY KEY,
-            event_channel        INTEGER,
-            announcement_channel INTEGER,
-            log_channel          INTEGER,
-            webhook_protection   INTEGER NOT NULL DEFAULT 1,
-            verified_bots        INTEGER NOT NULL DEFAULT 0,
-            link_filter_enabled  INTEGER NOT NULL DEFAULT 0,
-            panic_active         INTEGER NOT NULL DEFAULT 0,
-            announce_timeout     INTEGER NOT NULL DEFAULT 300
-        )""",
-        """CREATE TABLE IF NOT EXISTS trusted_members (
-            trusted_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            guild_id   INTEGER NOT NULL,
-            member_id  INTEGER NOT NULL,
-            UNIQUE (guild_id, member_id)
-        )""",
-        """CREATE TABLE IF NOT EXISTS channel_table (
-            channel_id INTEGER PRIMARY KEY,
-            guild_id   INTEGER NOT NULL
-        )""",
-        """CREATE TABLE IF NOT EXISTS link_whitelist (
-            id       INTEGER PRIMARY KEY AUTOINCREMENT,
-            guild_id INTEGER NOT NULL,
-            type     TEXT NOT NULL CHECK (type IN ('domain','specific')),
-            url      TEXT NOT NULL,
-            added_by INTEGER,
-            UNIQUE (guild_id, type, url)
-        )""",
-        """CREATE TABLE IF NOT EXISTS safe_roles (
-            id       INTEGER PRIMARY KEY AUTOINCREMENT,
-            guild_id INTEGER NOT NULL,
-            role_id  INTEGER NOT NULL,
-            UNIQUE (guild_id, role_id)
-        )""",
-        """CREATE TABLE IF NOT EXISTS backup_codes (
-            id        INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id   INTEGER NOT NULL,
-            code_hash TEXT NOT NULL
-        )""",
-        """CREATE TABLE IF NOT EXISTS link_managers (
-            id        INTEGER PRIMARY KEY AUTOINCREMENT,
-            guild_id  INTEGER NOT NULL,
-            member_id INTEGER NOT NULL,
-            UNIQUE (guild_id, member_id)
-        )""",
-        """CREATE TABLE IF NOT EXISTS panic_role_backup (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            guild_id    INTEGER NOT NULL,
-            role_id     INTEGER NOT NULL,
-            perms_value INTEGER NOT NULL,
-            timestamp   DATETIME DEFAULT CURRENT_TIMESTAMP
-        )""",
-        """CREATE TABLE IF NOT EXISTS panic_channel_backup (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            guild_id    INTEGER NOT NULL,
-            channel_id  INTEGER NOT NULL,
-            allow_value INTEGER NOT NULL,
-            deny_value  INTEGER NOT NULL,
-            timestamp   DATETIME DEFAULT CURRENT_TIMESTAMP
-        )""",
-        """CREATE TABLE IF NOT EXISTS link_filter_whitelist (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            guild_id    INTEGER NOT NULL,
-            entity_type TEXT NOT NULL CHECK (entity_type IN ('channel','role','user','category')),
-            entity_id   INTEGER NOT NULL,
-            added_by    INTEGER,
-            UNIQUE (guild_id, entity_type, entity_id)
-        )""",
-        """CREATE TABLE IF NOT EXISTS webhook_temp_disable (
-            guild_id    INTEGER PRIMARY KEY,
-            disabled_by INTEGER NOT NULL,
-            expires_at  DATETIME NOT NULL
-        )""",
-        """CREATE TABLE IF NOT EXISTS active_announcements (
-            announcement_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            member_id       INTEGER NOT NULL,
-            channel_id      INTEGER NOT NULL,
-            timestamp       DATETIME DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE (member_id, channel_id)
-        )""",
-    ]
-    for sql in tables:
-        conn.execute(sql)
-    conn.commit()
+    # Foreign keys OFF deliberately. These are unit tests over individual
+    # tables, and most insert child rows (trusted_members, channel_table)
+    # without first creating the parent guild. The previous fixture had the
+    # same effective behaviour: it declared PRAGMA foreign_keys=ON but its
+    # hand-copied schema omitted every FK clause, so nothing was enforced.
+    #
+    # Known gap: production runs with foreign_keys=ON, so referential
+    # integrity is not covered here. Worth closing separately by seeding a
+    # guild in the affected tests.
+    conn.execute("PRAGMA foreign_keys=OFF")
+
+    # Build from the real schema in db_handler rather than a copy. The previous
+    # hand-maintained duplicate drifted every time a table was added, so tests
+    # failed for fixture reasons that looked like product bugs.
+    db_handler.create_schema(conn)
+
+    # db_handler caches guild config keyed by connection identity; a recycled
+    # id() from a closed connection could otherwise serve stale rows to a
+    # later test.
+    db_handler.clear_cache()
     yield conn
+    db_handler.clear_cache()
     conn.close()
 
 

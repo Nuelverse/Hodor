@@ -4,9 +4,10 @@ Tests for two_factor_helper.py
 Covers:
   - TOTP secret generation and QR code creation
   - verify_code: valid, invalid, and zero-padded codes
-  - generate_backup_codes: count, format, uniqueness
-  - use_backup_code: valid consumption, single-use enforcement, normalization
-  - count_backup_codes: accurate after generation and use
+  - replay protection: a consumed code is refused for the rest of its window
+
+Backup codes were removed deliberately (see two_factor_helper), so there are
+no tests for them.
 """
 
 import pytest
@@ -61,91 +62,3 @@ class TestVerifyCode:
         # Verify using the integer value (may be < 100000 if zero-padded)
         result = two_factor_helper.verify_code(in_memory_db, USER_ID, int(raw))
         assert result is True
-
-
-# ---------------------------------------------------------------------------
-# Backup codes — generation
-# ---------------------------------------------------------------------------
-
-class TestGenerateBackupCodes:
-    def test_generates_eight_by_default(self, in_memory_db):
-        db_handler.insert_user(in_memory_db, (USER_ID, "DUMMY", 1))
-        codes = two_factor_helper.generate_backup_codes(in_memory_db, USER_ID)
-        assert len(codes) == 8
-
-    def test_custom_count(self, in_memory_db):
-        db_handler.insert_user(in_memory_db, (USER_ID, "DUMMY", 1))
-        codes = two_factor_helper.generate_backup_codes(in_memory_db, USER_ID, count=5)
-        assert len(codes) == 5
-
-    def test_format_is_xxxx_xxxx(self, in_memory_db):
-        db_handler.insert_user(in_memory_db, (USER_ID, "DUMMY", 1))
-        codes = two_factor_helper.generate_backup_codes(in_memory_db, USER_ID)
-        for code in codes:
-            assert len(code) == 9  # 4 + dash + 4
-            assert code[4] == "-"
-            assert code[:4].isdigit()
-            assert code[5:].isdigit()
-
-    def test_codes_are_unique(self, in_memory_db):
-        db_handler.insert_user(in_memory_db, (USER_ID, "DUMMY", 1))
-        codes = two_factor_helper.generate_backup_codes(in_memory_db, USER_ID)
-        assert len(set(codes)) == len(codes)
-
-    def test_regeneration_replaces_old_codes(self, in_memory_db):
-        db_handler.insert_user(in_memory_db, (USER_ID, "DUMMY", 1))
-        two_factor_helper.generate_backup_codes(in_memory_db, USER_ID)
-        assert db_handler.count_backup_codes(in_memory_db, USER_ID) == 8
-        # Regenerate
-        two_factor_helper.generate_backup_codes(in_memory_db, USER_ID)
-        assert db_handler.count_backup_codes(in_memory_db, USER_ID) == 8  # Still 8, not 16
-
-    def test_count_reflects_generation(self, in_memory_db):
-        db_handler.insert_user(in_memory_db, (USER_ID, "DUMMY", 1))
-        two_factor_helper.generate_backup_codes(in_memory_db, USER_ID)
-        assert db_handler.count_backup_codes(in_memory_db, USER_ID) == 8
-
-
-# ---------------------------------------------------------------------------
-# Backup codes — use_backup_code
-# ---------------------------------------------------------------------------
-
-class TestUseBackupCode:
-    def test_valid_code_accepted(self, in_memory_db):
-        db_handler.insert_user(in_memory_db, (USER_ID, "DUMMY", 1))
-        codes = two_factor_helper.generate_backup_codes(in_memory_db, USER_ID)
-        assert two_factor_helper.use_backup_code(in_memory_db, USER_ID, codes[0]) is True
-
-    def test_used_code_rejected(self, in_memory_db):
-        db_handler.insert_user(in_memory_db, (USER_ID, "DUMMY", 1))
-        codes = two_factor_helper.generate_backup_codes(in_memory_db, USER_ID)
-        two_factor_helper.use_backup_code(in_memory_db, USER_ID, codes[0])
-        # Second attempt on same code must fail
-        assert two_factor_helper.use_backup_code(in_memory_db, USER_ID, codes[0]) is False
-
-    def test_invalid_code_rejected(self, in_memory_db):
-        db_handler.insert_user(in_memory_db, (USER_ID, "DUMMY", 1))
-        two_factor_helper.generate_backup_codes(in_memory_db, USER_ID)
-        assert two_factor_helper.use_backup_code(in_memory_db, USER_ID, "0000-0000") is False
-
-    def test_code_without_dash_accepted(self, in_memory_db):
-        """Normalization: '12345678' should match '1234-5678'."""
-        db_handler.insert_user(in_memory_db, (USER_ID, "DUMMY", 1))
-        codes = two_factor_helper.generate_backup_codes(in_memory_db, USER_ID)
-        # Strip the dash
-        raw = codes[0].replace("-", "")
-        assert two_factor_helper.use_backup_code(in_memory_db, USER_ID, raw) is True
-
-    def test_code_count_decrements_after_use(self, in_memory_db):
-        db_handler.insert_user(in_memory_db, (USER_ID, "DUMMY", 1))
-        codes = two_factor_helper.generate_backup_codes(in_memory_db, USER_ID)
-        assert db_handler.count_backup_codes(in_memory_db, USER_ID) == 8
-        two_factor_helper.use_backup_code(in_memory_db, USER_ID, codes[0])
-        assert db_handler.count_backup_codes(in_memory_db, USER_ID) == 7
-
-    def test_all_codes_individually_consumable(self, in_memory_db):
-        db_handler.insert_user(in_memory_db, (USER_ID, "DUMMY", 1))
-        codes = two_factor_helper.generate_backup_codes(in_memory_db, USER_ID)
-        for code in codes:
-            assert two_factor_helper.use_backup_code(in_memory_db, USER_ID, code) is True
-        assert db_handler.count_backup_codes(in_memory_db, USER_ID) == 0

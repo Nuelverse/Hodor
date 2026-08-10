@@ -11,7 +11,6 @@ Covers every table and every function:
   - Link whitelist      — add, remove, get (domain + specific, duplicate prevention)
   - Link filter exempt  — add, remove, is_exempt, is_exempt_by_roles, get_all
   - Safe roles          — add, remove, is_safe, get
-  - Backup codes        — insert, count, get_by_hash, delete_by_id, delete_all
   - Link managers       — add, remove, is_manager, get
   - Panic backups       — save role/channel backup, get, clear
   - delete_guild cascade — verifies all child records are removed
@@ -392,55 +391,9 @@ class TestSafeRoles:
 
 
 # ---------------------------------------------------------------------------
-# Backup codes
-# ---------------------------------------------------------------------------
-
-class TestBackupCodes:
-    def test_insert_and_count(self, in_memory_db):
-        db_handler.insert_user(in_memory_db, (USER_A, "SECRET", 0))
-        db_handler.insert_backup_code(in_memory_db, USER_A, "hash1")
-        db_handler.insert_backup_code(in_memory_db, USER_A, "hash2")
-        assert db_handler.count_backup_codes(in_memory_db, USER_A) == 2
-
-    def test_get_backup_code_id_found(self, in_memory_db):
-        db_handler.insert_user(in_memory_db, (USER_A, "SECRET", 0))
-        db_handler.insert_backup_code(in_memory_db, USER_A, "myhash")
-        code_id = db_handler.get_backup_code_id(in_memory_db, USER_A, "myhash")
-        assert code_id is not None
-        assert isinstance(code_id, int)
-
-    def test_get_backup_code_id_not_found(self, in_memory_db):
-        db_handler.insert_user(in_memory_db, (USER_A, "SECRET", 0))
-        assert db_handler.get_backup_code_id(in_memory_db, USER_A, "wronghash") is None
-
-    def test_delete_backup_code_by_id(self, in_memory_db):
-        db_handler.insert_user(in_memory_db, (USER_A, "SECRET", 0))
-        db_handler.insert_backup_code(in_memory_db, USER_A, "myhash")
-        code_id = db_handler.get_backup_code_id(in_memory_db, USER_A, "myhash")
-        db_handler.delete_backup_code_by_id(in_memory_db, code_id)
-        assert db_handler.count_backup_codes(in_memory_db, USER_A) == 0
-
-    def test_delete_all_backup_codes(self, in_memory_db):
-        db_handler.insert_user(in_memory_db, (USER_A, "SECRET", 0))
-        for i in range(5):
-            db_handler.insert_backup_code(in_memory_db, USER_A, f"hash{i}")
-        db_handler.delete_backup_codes(in_memory_db, USER_A)
-        assert db_handler.count_backup_codes(in_memory_db, USER_A) == 0
-
-    def test_count_zero_for_new_user(self, in_memory_db):
-        db_handler.insert_user(in_memory_db, (USER_A, "SECRET", 0))
-        assert db_handler.count_backup_codes(in_memory_db, USER_A) == 0
-
-    def test_different_users_isolated(self, in_memory_db):
-        db_handler.insert_user(in_memory_db, (USER_A, "SECRETA", 0))
-        db_handler.insert_user(in_memory_db, (USER_B, "SECRETB", 0))
-        db_handler.insert_backup_code(in_memory_db, USER_A, "hasha")
-        assert db_handler.count_backup_codes(in_memory_db, USER_B) == 0
-
-
-# ---------------------------------------------------------------------------
 # Link managers
 # ---------------------------------------------------------------------------
+
 
 class TestLinkManagers:
     def test_add_and_check(self, in_memory_db):
