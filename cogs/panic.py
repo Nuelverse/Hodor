@@ -1,21 +1,3 @@
-"""
-Panic Mode — Emergency server lockdown. BOT OWNER ONLY.
-
-Commands:
-  /panic    — Opens a confirmation modal (2FA + typed confirmation phrase).
-              Backs up all role permissions and channel overwrites, then locks
-              down the entire server.
-
-  /recover  — Bot owner: restore the server from the most recent panic backup.
-              Requires 2FA.
-
-DM triggers (for when the bot owner has been kicked from the server):
-    panic <guild_id> <6-digit-2fa-code> CONFIRM LOCKDOWN
-    recover-panic <guild_id> <6-digit-2fa-code>
-
-WARNING: /panic is destructive and irreversible without /recover.
-"""
-
 import discord
 from discord.ext import commands
 from discord.commands import Option
@@ -29,9 +11,7 @@ import logger
 CONFIRM_PHRASE = "CONFIRM LOCKDOWN"
 
 
-# ---------------------------------------------------------------------------
 # Confirmation modal (2FA + typed phrase for double verification)
-# ---------------------------------------------------------------------------
 
 class PanicConfirmModal(discord.ui.Modal):
     def __init__(self, bot, guild: discord.Guild):
@@ -85,9 +65,7 @@ class PanicConfirmModal(discord.ui.Modal):
             await cog._execute_panic(self.guild, interaction.user)
 
 
-# ---------------------------------------------------------------------------
 # Helper
-# ---------------------------------------------------------------------------
 
 def _strip_dangerous_permissions(perms: discord.Permissions, dangerous: list[str]) -> discord.Permissions:
     new_perms = discord.Permissions(perms.value)
@@ -97,17 +75,13 @@ def _strip_dangerous_permissions(perms: discord.Permissions, dangerous: list[str
     return new_perms
 
 
-# ---------------------------------------------------------------------------
 # Cog
-# ---------------------------------------------------------------------------
 
 class Panic(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    # ------------------------------------------------------------------
     # Core lockdown logic
-    # ------------------------------------------------------------------
 
     async def _execute_panic(self, guild: discord.Guild, triggered_by):
         dangerous = self.bot.config.get("panic", {}).get("dangerous_permissions", [])
@@ -161,7 +135,7 @@ class Panic(commands.Cog):
                 except (discord.Forbidden, discord.HTTPException):
                     pass
         except Exception as e:
-            # Scheduled events are non-critical during a lockdown — log and move on.
+            # Scheduled events are non-critical during a lockdown - log and move on.
             print(f"[panic] Could not clear scheduled events for {guild.id}: {e}")
 
         # Phase 4: Lock all channels
@@ -208,9 +182,7 @@ class Panic(commands.Cog):
         embed.set_footer(text="Run /recover to restore. Server owner has been DM'd.")
         await logger.safe_send(log_ch, embed=embed)
 
-    # ------------------------------------------------------------------
     # Core restore logic
-    # ------------------------------------------------------------------
 
     async def _execute_recover(self, guild: discord.Guild, triggered_by) -> bool:
         audit_reason = f"PANIC RESTORE — by {triggered_by} ({triggered_by.id})"
@@ -269,9 +241,7 @@ class Panic(commands.Cog):
         await logger.safe_send(log_ch, embed=embed)
         return True
 
-    # ------------------------------------------------------------------
-    # /panic  (bot owner — opens confirmation modal)
-    # ------------------------------------------------------------------
+    # /panic  (bot owner - opens confirmation modal)
 
     @commands.guild_only()
     @commands.cooldown(1, 10, commands.BucketType.user)
@@ -301,9 +271,7 @@ class Panic(commands.Cog):
         modal = PanicConfirmModal(self.bot, ctx.guild)
         await ctx.send_modal(modal)
 
-    # ------------------------------------------------------------------
-    # /recover  (bot owner + 2FA — restore from backup)
-    # ------------------------------------------------------------------
+    # /recover  (bot owner + 2FA - restore from backup)
 
     @commands.guild_only()
     @commands.cooldown(1, 10, commands.BucketType.user)
@@ -340,9 +308,7 @@ class Panic(commands.Cog):
                 ephemeral=True
             )
 
-    # ------------------------------------------------------------------
     # DM trigger: panic <guild_id> <code>
-    # ------------------------------------------------------------------
 
     @commands.Cog.listener("on_message")
     async def on_dm_panic(self, message: discord.Message):
@@ -403,18 +369,15 @@ class Panic(commands.Cog):
             f"To restore later, DM: `recover-panic {guild_id} <6-digit-2fa-code>`"
         )
 
-    # ------------------------------------------------------------------
     # DM trigger: recover-panic <guild_id> <code>
-    # ------------------------------------------------------------------
 
     @commands.Cog.listener("on_message")
     async def on_dm_recover_panic(self, message: discord.Message):
         """
         Restore a locked-down server from a DM.
 
-        The documented reason to trigger panic by DM is that the owner was
-        kicked from the server — but /recover is guild-only, so without this
-        the escape hatch had no exit and the server stayed locked.
+        Panic is triggered by DM because the owner was kicked, but /recover is
+        guild-only - without this the escape hatch had no exit.
         """
         if message.guild is not None or message.author.bot:
             return

@@ -1,11 +1,3 @@
-"""
-Centralized logging utility for SecurityBot.
-
-All security-relevant actions are logged as Discord embeds to the guild's
-configured log channel. Every state-changing command MUST call log_action()
-so there is a full audit trail.
-"""
-
 import discord
 from datetime import datetime, timezone, timedelta
 import db_handler
@@ -20,16 +12,9 @@ _COLORS = {
 }
 
 
-# ---------------------------------------------------------------------------
 # Timestamp helpers
-# ---------------------------------------------------------------------------
 
 def fmt_timestamp(dt: datetime = None) -> str:
-    """
-    Return a Discord timestamp tag that renders as the full date/time
-    (e.g. Sunday, April 12, 2026 5:22 PM) in each viewer's local timezone.
-    Only works in embed field values and message content — not in footer text.
-    """
     if dt is None:
         dt = datetime.now(timezone.utc)
     return f"<t:{int(dt.timestamp())}:F>"
@@ -40,9 +25,7 @@ def fmt_timestamp_offset(seconds: int) -> str:
     return fmt_timestamp(datetime.now(timezone.utc) + timedelta(seconds=seconds))
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 async def safe_send(channel, **kwargs):
     """Send a message, silently ignoring permission errors."""
@@ -73,22 +56,6 @@ async def log_action(
     level: str = 'info',
     channel=None,
 ):
-    """
-    Send a standardized audit embed to the guild's log channel.
-
-    Args:
-        bot:     Bot instance (for CONN and get_channel).
-        guild:   The guild the action occurred in.
-        title:   Short description of the action, e.g. "Link Whitelisted".
-        actor:   The user who performed the action.
-        details: Optional dict of field_name -> field_value pairs.
-        level:   One of 'info', 'success', 'warning', 'error', 'critical'.
-        channel: Optional destination override. Used by verification so join
-                 traffic can go to its own channel — a steady trickle of
-                 "member verified" is a different audience from the security
-                 log, and mixing them buries the entries that matter. Falls
-                 back to the guild's configured log channel when None.
-    """
     log_ch = channel or get_log_channel(bot, guild)
     if not log_ch:
         return
@@ -111,7 +78,7 @@ async def log_action(
 
 
 async def log_link_deleted(bot, guild: discord.Guild, author, channel, blocked_url: str, content: str, edited: bool = False):
-    """Specialized log for link filter deletions — shows full message context."""
+    """Specialized log for link filter deletions - shows full message context."""
     log_ch = get_log_channel(bot, guild)
     if not log_ch:
         return

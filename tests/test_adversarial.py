@@ -33,9 +33,7 @@ GUILD_ID = 900000000000000001
 USER_ID = 900000000000000002
 
 
-# ---------------------------------------------------------------------------
-# Link filter — whitelist bypass
-# ---------------------------------------------------------------------------
+# Link filter - whitelist bypass
 
 class TestWhitelistBypass:
     """
@@ -132,9 +130,7 @@ class TestScannerEvasion:
             assert time.perf_counter() - start < 2.0, "scan too slow — possible DoS"
 
 
-# ---------------------------------------------------------------------------
 # SQL injection
-# ---------------------------------------------------------------------------
 
 SQLI = [
     "'; DROP TABLE users; --",
@@ -176,7 +172,7 @@ class TestSQLInjection:
         assert db_handler.get_guild_branding(in_memory_db, GUILD_ID)['footer'] == payload
 
     def test_role_id_list_query_is_parameterized(self, in_memory_db):
-        """is_filter_exempt_by_roles builds a placeholder list — check it holds."""
+        """is_filter_exempt_by_roles builds a placeholder list - check it holds."""
         db_handler.init_guild(in_memory_db, GUILD_ID, 1, 2)
         db_handler.add_filter_exempt(in_memory_db, GUILD_ID, 'role', 42, USER_ID)
         assert db_handler.is_filter_exempt_by_roles(in_memory_db, GUILD_ID, [42]) is True
@@ -184,9 +180,7 @@ class TestSQLInjection:
         assert db_handler.is_filter_exempt_by_roles(in_memory_db, GUILD_ID, []) is False
 
 
-# ---------------------------------------------------------------------------
 # Regex denial of service
-# ---------------------------------------------------------------------------
 
 class TestReDoS:
     @pytest.mark.parametrize("pattern", [
@@ -220,9 +214,7 @@ class TestReDoS:
         assert time.perf_counter() - start < 2.0, "ReDoS not contained"
 
 
-# ---------------------------------------------------------------------------
 # TOTP abuse
-# ---------------------------------------------------------------------------
 
 class TestTOTPAbuse:
     def _enrol(self, conn):
@@ -261,9 +253,7 @@ class TestTOTPAbuse:
         assert tf.verify_code(in_memory_db, USER_ID, code) == expected
 
 
-# ---------------------------------------------------------------------------
-# Encryption failure modes — must fail CLOSED
-# ---------------------------------------------------------------------------
+# Encryption failure modes - must fail CLOSED
 
 class TestEncryptionFailsClosed:
     def test_wrong_key_denies_access(self, in_memory_db, monkeypatch):
@@ -305,9 +295,7 @@ class TestEncryptionFailsClosed:
         importlib.reload(tf)
 
 
-# ---------------------------------------------------------------------------
 # Captcha integrity
-# ---------------------------------------------------------------------------
 
 class TestCaptchaIntegrity:
     def test_answers_are_high_entropy(self):
@@ -327,9 +315,7 @@ class TestCaptchaIntegrity:
         assert per < 0.25, f"captcha too slow ({per*1000:.0f}ms) — raid amplifier"
 
 
-# ---------------------------------------------------------------------------
 # Resource exhaustion
-# ---------------------------------------------------------------------------
 
 class TestResourceExhaustion:
     def test_filter_id_set_is_bounded(self):
@@ -368,9 +354,7 @@ class TestResourceExhaustion:
         assert matches > CLEANSE_ABORT_MIN
 
 
-# ---------------------------------------------------------------------------
 # Data lifecycle
-# ---------------------------------------------------------------------------
 
 class TestDataLifecycle:
     def test_deleting_a_guild_removes_all_its_data(self, in_memory_db):

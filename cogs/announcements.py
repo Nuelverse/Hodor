@@ -1,16 +1,3 @@
-"""
-Announcements — temporarily grants an announcer send permissions in a configured
-announcement channel so they can post directly.
-
-Commands:
-  /announce channel:<channel> code:<2FA>  — Announcers only.
-      Verifies 2FA, grants send_messages + embed_links + attach_files + mention_everyone
-      for the configured timeout, then auto-revokes on expiry.
-
-Note: The link filter still applies during the window. Any links to be posted must
-      be whitelisted via /allow-link before the announcement.
-"""
-
 import asyncio
 import time
 
@@ -31,19 +18,16 @@ class Announcements(commands.Cog):
         self._revoke_tasks: dict[tuple, asyncio.Task] = {}
         self._reconciled = False
 
-    # ------------------------------------------------------------------
     # Startup reconciliation
-    # ------------------------------------------------------------------
 
     @commands.Cog.listener()
     async def on_ready(self):
         """
         Re-arm or revoke grants that outlived the process.
 
-        Revocation used to live only in an in-memory asyncio task, so a restart
-        during an active window left the member holding send_messages and
-        mention_everyone forever. Every grant is now persisted, so on startup we
-        revoke the expired ones immediately and schedule the rest.
+        Revocation used to be in-memory only, so a restart mid-window left the
+        member holding send_messages forever. Grants are persisted now: revoke the
+        expired ones on startup, reschedule the rest.
         """
         if self._reconciled:
             return
@@ -66,7 +50,7 @@ class Announcements(commands.Cog):
             member = guild.get_member(member_id) if guild else None
 
             if channel is None or member is None:
-                # Can't act on it any more — drop the stale row.
+                # Can't act on it any more - drop the stale row.
                 db_handler.delete_active_announcement(self.bot.CONN, (channel_id, member_id))
                 continue
 
@@ -98,9 +82,7 @@ class Announcements(commands.Cog):
             print(f"[announce] Reconciled grants on startup: "
                   f"{revoked} revoked (expired), {restored} rescheduled.")
 
-    # ------------------------------------------------------------------
     # /announce
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.cooldown(1, 5, commands.BucketType.user)
@@ -205,9 +187,7 @@ class Announcements(commands.Cog):
             level='info',
         )
 
-    # ------------------------------------------------------------------
     # Revocation task
-    # ------------------------------------------------------------------
 
     async def _revoke_announce(
         self,

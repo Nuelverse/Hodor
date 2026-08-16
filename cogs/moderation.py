@@ -1,22 +1,4 @@
-"""
-Moderation — server utility commands for owners and admins.
-
-Commands:
-  /role                — Assign/toggle a safe-listed role on a member.
-  /bulk-role           — Modal: assign a role to many users at once.
-  /new-role            — Create a new role with a name and optional hex color.
-  /rename-channel      — Rename a channel (protects log and announcement channels).
-  /toggle-channel      — Toggle view_channel permission for a role on a channel.
-  /sync-channels       — Sync all channels in a category to match category permissions.
-  /restrict-channel    — Restrict or unrestrict a user to a specific channel or category.
-  /lock-threads        — Lock and archive all threads in a channel.
-  /export              — Export all members with their roles to a CSV file.
-  /export-category     — Export all messages per channel in a category to a zip of CSVs.
-  /export-permissions  — Export all roles and permissions to a colour-coded Excel file.
-  /list-overrides      — List all channels with user-specific permission overrides.
-
-All commands require server owner or bot owner access.
-"""
+# Moderation - server utility commands for owners and admins.
 
 import csv
 import io
@@ -39,9 +21,7 @@ DANGEROUS_PERMISSIONS = [
     "manage_expressions", "manage_threads", "mention_everyone", "moderate_members",
 ]
 
-# ---------------------------------------------------------------------------
-# export-permissions — Excel styling constants
-# ---------------------------------------------------------------------------
+# export-permissions - Excel styling constants
 
 _GREEN_FILL  = PatternFill(fill_type="solid", fgColor="C6EFCE")   # allowed
 _RED_FILL    = PatternFill(fill_type="solid", fgColor="FFC7CE")   # denied
@@ -114,9 +94,7 @@ def role_has_dangerous_perms(role: discord.Role) -> bool:
     return any(getattr(role.permissions, p, False) for p in DANGEROUS_PERMISSIONS)
 
 
-# ---------------------------------------------------------------------------
 # Bulk-role modal
-# ---------------------------------------------------------------------------
 
 class BulkRoleModal(discord.ui.Modal):
     def __init__(self, bot, guild: discord.Guild):
@@ -168,8 +146,6 @@ class BulkRoleModal(discord.ui.Modal):
             )
             return
 
-        # Same hierarchy guard /role applies: without it every add_roles call
-        # below fails one by one with a Forbidden that looks like a bot bug.
         me = self.guild.me
         if me is not None and role >= me.top_role:
             await interaction.response.send_message(
@@ -214,9 +190,7 @@ class BulkRoleModal(discord.ui.Modal):
         )
 
 
-# ---------------------------------------------------------------------------
 # Cog
-# ---------------------------------------------------------------------------
 
 class Moderation(commands.Cog):
     def __init__(self, bot):
@@ -225,9 +199,7 @@ class Moderation(commands.Cog):
     def _check_owner(self, ctx) -> tuple[bool, str]:
         return permissions.check(self.bot, ctx, 'owner')
 
-    # ------------------------------------------------------------------
     # /role
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.slash_command(description="[Owner] Assign or remove a safe-listed role from a member. Requires 2FA.")
@@ -282,9 +254,7 @@ class Moderation(commands.Cog):
             level='info'
         )
 
-    # ------------------------------------------------------------------
     # /bulk-role
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.slash_command(
@@ -309,9 +279,7 @@ class Moderation(commands.Cog):
 
         await ctx.send_modal(BulkRoleModal(self.bot, ctx.guild))
 
-    # ------------------------------------------------------------------
     # /new-role
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.slash_command(
@@ -354,9 +322,7 @@ class Moderation(commands.Cog):
             level='info'
         )
 
-    # ------------------------------------------------------------------
     # /rename-channel
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.slash_command(
@@ -406,9 +372,7 @@ class Moderation(commands.Cog):
             level='info'
         )
 
-    # ------------------------------------------------------------------
     # /toggle-channel
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.slash_command(
@@ -462,9 +426,7 @@ class Moderation(commands.Cog):
             level='info'
         )
 
-    # ------------------------------------------------------------------
     # /sync-channels
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.slash_command(
@@ -499,9 +461,7 @@ class Moderation(commands.Cog):
             level='info'
         )
 
-    # ------------------------------------------------------------------
     # /restrict-channel
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.slash_command(
@@ -571,9 +531,7 @@ class Moderation(commands.Cog):
             level='info'
         )
 
-    # ------------------------------------------------------------------
     # /lock-threads
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.slash_command(
@@ -628,9 +586,7 @@ class Moderation(commands.Cog):
             level='info'
         )
 
-    # ------------------------------------------------------------------
     # /export
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.slash_command(
@@ -668,9 +624,7 @@ class Moderation(commands.Cog):
             level='info'
         )
 
-    # ------------------------------------------------------------------
     # /export-category
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.slash_command(
@@ -738,9 +692,7 @@ class Moderation(commands.Cog):
             level='info'
         )
 
-    # ------------------------------------------------------------------
     # /export-permissions
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.slash_command(
@@ -766,7 +718,7 @@ class Moderation(commands.Cog):
 
         wb = openpyxl.Workbook()
 
-        # ── Sheet 1: Server-Level Permissions ──────────────────────────────
+        # ── Sheet 1: Server-Level Permissions 
         ws1 = wb.active
         ws1.title = "Server Permissions"
         ws1.freeze_panes = "B2"  # Keep first row + column locked while scrolling
@@ -803,7 +755,7 @@ class Moderation(commands.Cog):
             col_letter = openpyxl.utils.get_column_letter(col_idx)
             ws1.column_dimensions[col_letter].width = max(len(role.name) + 2, 12)
 
-        # ── Sheet 2: Category Overrides ────────────────────────────────────
+        # ── Sheet 2: Category Overrides
         ws2 = wb.create_sheet("Category Overrides")
         for col_idx, header in enumerate(["Category", "Role", "Permission", "Override"], start=1):
             cell = ws2.cell(1, col_idx, header)
@@ -821,7 +773,7 @@ class Moderation(commands.Cog):
                     is_allow = getattr(allow_perms, perm_key, False)
                     is_deny  = getattr(deny_perms,  perm_key, False)
                     if not is_allow and not is_deny:
-                        continue  # ➖ Inherited — skip to keep sheet concise
+                        continue  # ➖ Inherited - skip to keep sheet concise
                     has_cat_data = True
                     override_str = "✅ Allow" if is_allow else "❌ Deny"
                     row = ws2.max_row + 1
@@ -908,9 +860,7 @@ class Moderation(commands.Cog):
             level='info'
         )
 
-    # ------------------------------------------------------------------
     # /list-overrides
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.slash_command(

@@ -21,9 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import db_handler
 
-# ---------------------------------------------------------------------------
 # Shared test IDs
-# ---------------------------------------------------------------------------
 
 GUILD_1   = 200000000000000001
 GUILD_2   = 200000000000000002
@@ -34,9 +32,7 @@ CHANNEL_2 = 300000000000000002
 LOG_CH    = 300000000000000099
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 def _setup_guild(conn, guild_id=GUILD_1):
     db_handler.init_guild(conn, guild_id, log_channel=LOG_CH)
@@ -51,7 +47,7 @@ def _insert_session(conn, channel_id=CHANNEL_1, member_id=USER_A):
 
 
 def _has_session(conn, channel_id, member_id) -> bool:
-    """Direct SQL check — avoids coupling to any future helper."""
+    """Direct SQL check - avoids coupling to any future helper."""
     cur = conn.execute(
         "SELECT EXISTS(SELECT 1 FROM active_announcements WHERE channel_id=? AND member_id=?)",
         (channel_id, member_id),
@@ -59,9 +55,7 @@ def _has_session(conn, channel_id, member_id) -> bool:
     return bool(cur.fetchone()[0])
 
 
-# ---------------------------------------------------------------------------
-# Active announcement session — DB layer
-# ---------------------------------------------------------------------------
+# Active announcement session - DB layer
 
 class TestActiveAnnouncementSession:
 
@@ -99,9 +93,7 @@ class TestActiveAnnouncementSession:
         db_handler.delete_active_announcement(in_memory_db, (CHANNEL_1, USER_A))
 
 
-# ---------------------------------------------------------------------------
-# Session isolation — user scope
-# ---------------------------------------------------------------------------
+# Session isolation - user scope
 
 class TestSessionUserIsolation:
 
@@ -124,9 +116,7 @@ class TestSessionUserIsolation:
         assert _has_session(in_memory_db, CHANNEL_1, USER_B)
 
 
-# ---------------------------------------------------------------------------
-# Session isolation — channel scope
-# ---------------------------------------------------------------------------
+# Session isolation - channel scope
 
 class TestSessionChannelIsolation:
 
@@ -142,9 +132,7 @@ class TestSessionChannelIsolation:
         assert _has_session(in_memory_db, CHANNEL_2, USER_A)
 
 
-# ---------------------------------------------------------------------------
 # Announce timeout
-# ---------------------------------------------------------------------------
 
 class TestAnnounceTimeout:
 
@@ -175,9 +163,7 @@ class TestAnnounceTimeout:
         assert db_handler.get_announce_timeout(in_memory_db, GUILD_2) == 300
 
 
-# ---------------------------------------------------------------------------
 # Channel authorization guard (/announce channel must be in channel_table)
-# ---------------------------------------------------------------------------
 
 class TestChannelAuthorization:
 
@@ -205,9 +191,7 @@ class TestChannelAuthorization:
         assert CHANNEL_1 not in db_handler.get_channels(in_memory_db, GUILD_1)
 
 
-# ---------------------------------------------------------------------------
 # Announcer role check (/announce requires trusted_members entry)
-# ---------------------------------------------------------------------------
 
 class TestAnnouncerAuthorization:
 

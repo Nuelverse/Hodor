@@ -1,14 +1,18 @@
-# SecurityBot — Discord Server Security Bot
+# Hodor
 
-A production-grade Discord security bot for communities that take their server's safety seriously. SecurityBot combines multi-factor authentication, advanced link scanning, automated name filtering, webhook protection, and full-server panic lockdown — all controlled through a strict 2FA-gated permission hierarchy.
+A self-hosted Discord security bot for web3 communities.
+
+Hodor replaces link blocklists with a strict **allowlist** — only the domains you register survive, and a five-pass scanner unpacks percent-encoding, unicode lookalikes, split URLs and invisible characters before matching, so a brand-new scam domain is handled exactly like a known one. Verification gates new members, name filters catch impersonators on join and rename, and unapproved webhooks are removed on sight.
+
+Every command that can change security state is itself gated behind single-use TOTP codes and a scoped permission hierarchy — so a compromised moderator account cannot reconfigure the thing protecting you.
 
 Designed for one server per instance. Easy to self-host. Built with Python + py-cord.
 
 ---
 
-## Why SecurityBot?
+## Why Hodor?
 
-Most Discord bots treat security as an afterthought. SecurityBot was built security-first:
+Most Discord bots treat security as an afterthought. Hodor was built security-first:
 
 - **Every sensitive action requires a live 2FA code** — no exceptions.
 - **Five-pass link scanner** that catches obfuscated, percent-encoded, markdown-split, and Unicode-spoofed URLs that other bots miss entirely.
@@ -278,6 +282,8 @@ Admin runs /add-linkmanager or /add-announcer
 
 > Scan QR codes with an authenticator app — **never** with Discord mobile's built-in camera (it opens links instead of reading TOTP).
 
+**There is no time limit on this.** The grant is what unlocks `/create-2fa`, not a window after it. A member added as an announcer or link manager can pair their authenticator minutes later or weeks later, whenever suits them — the DM is a prompt, not a deadline. They simply can't use their assigned commands until they have, since every privileged command checks for a verified pairing at call time. The same applies after `/reset-user`: the reset clears the old pairing and the member re-runs `/create-2fa` whenever they're ready.
+
 ---
 
 ## Command Reference
@@ -350,12 +356,19 @@ Admin runs /add-linkmanager or /add-announcer
 | `/name-filter test name`                              | Announcers, owners | No  | Check if a name would be caught and which filter would match it.                         |
 | `/name-filter set-action action code [timeout_hours]` | **Owners only**    | Yes | Set match action: `flag` (log only, default), `ban`, `kick`, or `timeout` (1–672 hours). |
 | `/name-filter cleanse code`                           | **Owners only**    | Yes | Retroactively scan all current members. 5-minute guild cooldown.                         |
+| `/name-filter exempt add role code`                   | **Owners only**    | Yes | Exempt a role from every check. Its members are skipped entirely.                        |
+| `/name-filter exempt remove role code`                | **Owners only**    | Yes | Remove a role's exemption so its members are scanned again.                               |
+| `/name-filter exempt list`                            | Announcers, owners | No  | Show which roles the filter currently ignores.                                            |
 
 **Regex safety:** patterns are rejected if they exceed 200 characters or contain a nested quantifier such as `(a+)+` or `(x*)*`. Those can trigger catastrophic backtracking, and since filters run on every join and nickname change, one bad pattern would freeze the whole bot.
 
 **Cleanse safety:** `cleanse` aborts without touching anyone if a run would action more than 25% of eligible members (and more than 10 people). A filter matching most of the server is almost always an over-broad pattern rather than a real attack, and bans cannot be undone in bulk. Narrow the filter with `/name-filter test` and run it again.
 
-**Exemptions:** the bot owner, server owner, announcers, link managers, and anyone with Administrator / Ban / Kick / Manage Server / Timeout permissions are skipped — so a bad pattern can't remove the staff who need to fix it.
+**Exemptions** come in two tiers, and the difference matters.
+
+*Explicit role exemptions* (`/name-filter exempt add`) are a **full skip**: members holding that role are never checked on join, on nickname change, on username change, or during `cleanse` — no action and no log entry. Use this for staff, team, and partner roles whose names legitimately contain words like "support" or "admin". They are also excluded from the cleanse safety threshold, so exempting a large role won't skew the 25% abort calculation. `@everyone` is refused, since exempting it would disable the filter while leaving it looking configured.
+
+*Implicit protection* covers the bot owner, server owner, announcers, link managers, and anyone with Administrator / Ban / Kick / Manage Server / Timeout permissions. These are **downgraded to `flag`, not skipped** — a bad pattern can't remove the staff who need to fix it, but the match is still logged. That is deliberate: a moderator account that suddenly renames itself to "MetaMask Support" is exactly what a compromised account looks like, and silently ignoring it would hide the incident. If you want a staff role genuinely invisible to the filter, exempt it explicitly.
 
 ### Moderation
 
@@ -453,8 +466,8 @@ The name shown in authenticator apps is set in [two_factor_helper.py](two_factor
 
 ```python
 uri = pyotp.totp.TOTP(secret).provisioning_uri(
-    name="Security Bot",       # Shown as the account label
-    issuer_name="SecurityBot"  # Shown as the issuer
+    name="Hodor",              # Shown as the account label
+    issuer_name="Hodor"        # Shown as the issuer
 )
 ```
 

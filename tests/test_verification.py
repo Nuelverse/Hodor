@@ -25,9 +25,7 @@ CHANNEL_ID = 300000000000000001
 ROLE_ID = 400000000000000001
 
 
-# ---------------------------------------------------------------------------
 # Captcha generation
-# ---------------------------------------------------------------------------
 
 class TestCaptchaGeneration:
     def test_answer_length_matches_problem_count(self):
@@ -79,7 +77,7 @@ class TestChallengeNotLeaked:
     """
     The reason this system exists: a captcha whose problems appear in message
     text is solvable by reading the message. generate() must hand back only an
-    image and the answer — never the problem text.
+    image and the answer - never the problem text.
     """
 
     def test_generate_returns_only_buffer_and_answer(self):
@@ -95,9 +93,7 @@ class TestChallengeNotLeaked:
             assert token not in answer
 
 
-# ---------------------------------------------------------------------------
 # Database layer
-# ---------------------------------------------------------------------------
 
 class TestVerificationConfig:
     def _init_guild(self, conn):
@@ -161,9 +157,7 @@ class TestVerificationConfig:
         assert db_handler.get_verification_config(in_memory_db, GUILD_ID)['role_id'] == 777
 
 
-# ---------------------------------------------------------------------------
 # Branding
-# ---------------------------------------------------------------------------
 
 class TestGuildBranding:
     def test_defaults_when_unset(self, in_memory_db):
@@ -187,9 +181,7 @@ class TestGuildBranding:
         assert b['footer'] == "Keep me"
 
 
-# ---------------------------------------------------------------------------
 # Session mechanics
-# ---------------------------------------------------------------------------
 
 class TestSession:
     def _cog(self):
@@ -236,9 +228,7 @@ class TestSession:
         assert dead not in cog._sessions
 
 
-# ---------------------------------------------------------------------------
-# Name filter — action modes
-# ---------------------------------------------------------------------------
+# Name filter - action modes
 
 class TestNameFilterActions:
     def test_action_labels(self):
@@ -273,9 +263,7 @@ class TestNameFilterActions:
         assert db_handler.get_name_filter_action(in_memory_db, GUILD_ID) == 'ban'
 
 
-# ---------------------------------------------------------------------------
 # Join-log routing
-# ---------------------------------------------------------------------------
 
 class TestJoinLogRouting:
     def test_defaults_to_main_log_channel(self, in_memory_db):

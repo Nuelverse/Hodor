@@ -1,23 +1,12 @@
 """
-Core — 2FA registration, verification, and account recovery.
+Core - 2FA registration, verification, and account recovery.
 
 Commands:
-  /create-2fa   — Generate a TOTP QR code (available to registered users,
+  /create-2fa - Generate a TOTP QR code (available to registered users,
                   server owners, and bot owner).
-  /verify       — Confirm the TOTP pairing.
-  /reset-user   — Bot owner or server owner: wipe a user's 2FA so they can re-register.
+  /verify - Confirm the TOTP pairing.
+  /reset-user - Bot owner or server owner: wipe a user's 2FA so they can re-register.
 
-Recovery model:
-  There is no self-service recovery. Losing an authenticator requires an owner
-  to run /reset-user, which is written to the audit log, after which the user
-  re-enrols with /create-2fa.
-
-  Single-use backup codes used to fill this role and were removed. Shown once
-  in a Discord message, they were habitually screenshotted into saved messages
-  or a notes app — so an attacker who phished the Discord account also found
-  the codes, wiped the victim's 2FA over DM, paired their own authenticator,
-  and inherited the keycard silently. Re-issuing access through a person is
-  slower and strictly safer.
 """
 
 import asyncio
@@ -40,19 +29,10 @@ class Core(commands.Cog):
     def cog_unload(self):
         self.delete_pngs.cancel()
 
-    # ------------------------------------------------------------------
     # Background task: purge QR code PNGs every minute
-    # ------------------------------------------------------------------
 
     @tasks.loop(minutes=1)
     async def delete_pngs(self):
-        """
-        Purge stray QR PNGs.
-
-        New setups render the QR straight to memory and never write it to disk,
-        so this only sweeps files left behind by older versions. Runs in a
-        worker thread because filesystem calls block the event loop.
-        """
         await asyncio.to_thread(self._purge_png_files)
 
     @staticmethod
@@ -71,9 +51,7 @@ class Core(commands.Cog):
     async def before_delete_pngs(self):
         await self.bot.wait_until_ready()
 
-    # ------------------------------------------------------------------
     # /create-2fa
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.cooldown(1, 10, commands.BucketType.user)
@@ -99,17 +77,14 @@ class Core(commands.Cog):
                     "ask a server owner to run `/reset-user` for you, then run `/create-2fa` again.",
                     ephemeral=True
                 )
-            else:
-                await ctx.respond(
-                    "You have a pending 2FA setup. Run `/verify code:<6-digit-code>` to complete it.",
-                    ephemeral=True
-                )
-            return
+                return
+
+            db_handler.delete_user(self.bot.CONN, user_id)
 
         qr_buffer, secret = two_factor_helper.setup_and_get_path(ctx, self.bot.CONN)
 
         await ctx.respond(
-            "**2FA Setup — Security Bot**\n\n"
+            "**2FA Setup — Hodor**\n\n"
             "1. Open **Authy** or **Google Authenticator** — never scan QR codes with Discord mobile.\n"
             "2. Scan the QR code below, or add manually as a **Time-based OTP** using this key:\n"
             f"```{secret}```\n"
@@ -130,9 +105,7 @@ class Core(commands.Cog):
             level='info'
         )
 
-    # ------------------------------------------------------------------
     # /verify
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.cooldown(1, 5, commands.BucketType.user)
@@ -146,7 +119,18 @@ class Core(commands.Cog):
             return
 
         if db_handler.check_verified(self.bot.CONN, user_id) == 1:
-            await ctx.respond("Your 2FA is already verified.", ephemeral=True)
+            if two_factor_helper.code_matches(self.bot.CONN, user_id, code):
+                await ctx.respond(
+                    "Your 2FA is already verified, and that code is valid.",
+                    ephemeral=True
+                )
+            else:
+                await ctx.respond(
+                    "Your 2FA is already verified, but that code does not match the secret "
+                    "on file - your authenticator is paired to a different one. Ask a server "
+                    "owner to run `/reset-user` for you, then run `/create-2fa` again.",
+                    ephemeral=True
+                )
             return
 
         if two_factor_helper.verify_code(self.bot.CONN, user_id, code):
@@ -167,9 +151,7 @@ class Core(commands.Cog):
                 ephemeral=True
             )
 
-    # ------------------------------------------------------------------
     # /reset-user  (bot owner or server owner + 2FA)
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.cooldown(1, 5, commands.BucketType.user)

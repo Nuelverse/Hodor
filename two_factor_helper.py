@@ -1,5 +1,5 @@
 """
-Two-factor helpers — TOTP pairing and code verification.
+Two-factor helpers - TOTP pairing and code verification.
 
 Security properties implemented here:
 
@@ -18,7 +18,7 @@ Security properties implemented here:
 
   3. No self-service recovery.
      TOTP is the only credential. Single-use backup codes were removed
-     deliberately — see the "Account recovery" note further down. Losing an
+     deliberately - see the "Account recovery" note further down. Losing an
      authenticator requires an owner to run /reset-user, which is logged.
 
 Set ENCRYPTION_KEY in .env. Generate one with:
@@ -48,9 +48,7 @@ _TOTP_STEP_SECONDS = 30
 _key_missing_warned = False
 
 
-# ---------------------------------------------------------------------------
 # Key management
-# ---------------------------------------------------------------------------
 
 def _raw_key() -> str:
     return os.getenv("ENCRYPTION_KEY", "").strip()
@@ -58,11 +56,10 @@ def _raw_key() -> str:
 
 def _fernet():
     """
-    Return a Fernet instance, or None when no ENCRYPTION_KEY is configured.
+    Fernet instance, or None when ENCRYPTION_KEY is unset.
 
-    Accepts either a real Fernet key or an arbitrary passphrase (hashed into
-    a valid key), so a mis-formatted key degrades to 'still encrypted' rather
-    than 'silently plaintext'.
+    Accepts a raw key or a passphrase (hashed into one), so a malformed key
+    degrades to 'still encrypted' rather than 'silently plaintext'.
     """
     global _key_missing_warned
     raw = _raw_key()
@@ -86,12 +83,9 @@ def encryption_enabled() -> bool:
     return bool(_raw_key())
 
 
-# ---------------------------------------------------------------------------
 # Secret encryption
-# ---------------------------------------------------------------------------
 
 def encrypt_secret(plain: str) -> str:
-    """Encrypt a TOTP secret for storage. Returns plaintext if no key is set."""
     f = _fernet()
     if f is None:
         return plain
@@ -99,13 +93,6 @@ def encrypt_secret(plain: str) -> str:
 
 
 def decrypt_secret(stored: str):
-    """
-    Decrypt a stored TOTP secret.
-
-    Rows written before encryption was enabled have no prefix and are returned
-    as-is. Returns None if a value is encrypted but cannot be decrypted (wrong
-    or rotated key) so callers fail closed rather than verifying against junk.
-    """
     if stored is None:
         return None
     if not stored.startswith(ENC_PREFIX):
@@ -122,10 +109,6 @@ def decrypt_secret(stored: str):
 
 
 def migrate_plaintext_secrets(conn) -> int:
-    """
-    Encrypt any secrets still stored in plaintext. Idempotent and safe to run
-    on every startup. Returns the number of rows upgraded.
-    """
     if not encryption_enabled():
         return 0
     try:
@@ -152,25 +135,14 @@ def migrate_plaintext_secrets(conn) -> int:
     return upgraded
 
 
-# ---------------------------------------------------------------------------
 # TOTP setup
-# ---------------------------------------------------------------------------
 
 def setup_and_get_path(ctx, connection):
-    """
-    Generate a TOTP secret, render its QR code, and store the (encrypted)
-    secret. Returns (qr_buffer, secret).
-
-    The QR encodes the secret, so it is rendered to an in-memory buffer and
-    never touches disk — previously it was written to ./data and relied on a
-    once-a-minute cleanup task, leaving a window where the secret sat in a
-    world-readable file.
-    """
     secret = pyotp.random_base32()
     user_id = int(ctx.user.id)
     uri = pyotp.totp.TOTP(secret).provisioning_uri(
         name=f"{ctx.user} ({user_id})",
-        issuer_name="Discord-Shield",
+        issuer_name="Hodor",
     )
     qr = pyqrcode.create(uri, error='L')
     buffer = io.BytesIO()
@@ -181,22 +153,13 @@ def setup_and_get_path(ctx, connection):
     return buffer, secret
 
 
-# ---------------------------------------------------------------------------
 # TOTP verification
-# ---------------------------------------------------------------------------
 
 def _current_step() -> int:
     return int(time.time()) // _TOTP_STEP_SECONDS
 
 
 def verify_code(connection, user_id: int, code) -> bool:
-    """
-    Verify a 6-digit TOTP code. Accepts int or str, zero-pads to 6 digits.
-
-    Returns False for an incorrect code AND for a correct code that has
-    already been spent this time-step (replay). Callers surface both the same
-    way; a replayed code is not a legitimate authentication.
-    """
     try:
         code_str = f"{int(code):06d}"
     except (TypeError, ValueError):
@@ -210,7 +173,7 @@ def verify_code(connection, user_id: int, code) -> bool:
     step = _current_step()
     last_step = db_handler.get_last_totp_step(connection, user_id)
     if last_step is not None and last_step >= step:
-        # This step (or a later one) was already consumed — refuse the replay.
+        # This step (or a later one) was already consumed - refuse the replay.
         return False
 
     try:
@@ -223,31 +186,22 @@ def verify_code(connection, user_id: int, code) -> bool:
     return bool(ok)
 
 
+def code_matches(connection, user_id: int, code) -> bool:
+    try:
+        code_str = f"{int(code):06d}"
+    except (TypeError, ValueError):
+        return False
+
+    secret = decrypt_secret(db_handler.get_secret(conn=connection, user_id=user_id))
+    if not secret:
+        return False
+    try:
+        return bool(pyotp.TOTP(secret).verify(code_str))
+    except Exception:
+        return False
+
+
 def get_log_channel(bot, guild: discord.Guild):
     """Return the log channel object for a guild, or None."""
     log_id = db_handler.get_log_channel(bot.CONN, guild.id)
     return bot.get_channel(log_id) if log_id else None
-
-
-# ---------------------------------------------------------------------------
-# Account recovery
-# ---------------------------------------------------------------------------
-#
-# There is deliberately NO self-service recovery here.
-#
-# Single-use backup codes were removed. They looked like a safety net but
-# functioned as a second, weaker credential: shown once in a Discord message,
-# they were routinely screenshotted into saved messages or a notes app. That
-# turned "attacker phishes a Discord account" into "attacker phishes a Discord
-# account AND finds the codes sitting in it" — at which point they could wipe
-# the victim's 2FA over DM, re-pair their own authenticator, and inherit the
-# keycard with no human ever noticing.
-#
-# Losing an authenticator is now handled the way losing a building pass is:
-# a person with authority re-issues it. An owner runs /reset-user, which clears
-# the account and is written to the audit log, and the user re-enrols with
-# /create-2fa.
-#
-# The global operator (MASTER_USER_ID) is the one account no one can reset in
-# band. Its recovery is deliberately out of band, via the infrastructure it
-# already controls — see "Operator lockout" in the README.

@@ -10,6 +10,7 @@
 *.db-wal
 *.sqlite
 *.sqlite3
+*.db.backup-*
 
 # Logs
 *.log
@@ -57,3 +58,9 @@ HQ-Announce/
 
 # Offline simulation script (dev only)
 simulate.py
+
+# Local dev supervisor
+run.ps1
+
+# Heavily commented learning copy of this codebase (local reference only)
+annotated/

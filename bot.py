@@ -1,9 +1,11 @@
 import asyncio
 import os
+import ssl
 import sys
 import time
 from collections import OrderedDict
 
+import aiohttp
 import discord
 from discord.ext import commands
 import json
@@ -11,8 +13,6 @@ from dotenv import load_dotenv
 import db_handler
 import two_factor_helper
 
-# py-cord calls asyncio.get_event_loop() at init time, which raises on Python 3.10+
-# when no loop exists yet. Create one explicitly before instantiating the bot.
 asyncio.set_event_loop(asyncio.new_event_loop())
 
 load_dotenv()
@@ -36,15 +36,7 @@ COGS = [
 
 
 class BoundedIdSet:
-    """
-    A set of message IDs with a hard size cap.
-
-    The link filter marks a message ID before deleting it so the audit cog can
-    suppress a duplicate log entry. When the delete fails (missing permissions,
-    message already gone) nothing ever removes the ID, so a plain set grew
-    without bound for the lifetime of the process. Oldest entries are evicted
-    once the cap is reached.
-    """
+    # A set of message IDs with a hard size cap.
 
     def __init__(self, maxlen: int = 2048):
         self._data = OrderedDict()
@@ -66,7 +58,7 @@ class BoundedIdSet:
         return len(self._data)
 
 
-class SecurityBot(discord.Bot):
+class Hodor(discord.Bot):
     def __init__(self, master_user: int):
         intents = discord.Intents.default()
         intents.members = True
@@ -74,14 +66,9 @@ class SecurityBot(discord.Bot):
         intents.webhooks = True
         intents.scheduled_events = True
         intents.messages = True
-        intents.message_content = True  # Privileged — must be enabled in Dev Portal
+        intents.message_content = True
         debug_guild = int(os.getenv('DEBUG_GUILD_ID', 0)) or None
-        # max_messages controls how many recent messages stay in memory. Only
-        # cached messages can be logged WITH their content when deleted, so the
-        # default of 1000 meant losing the text of anything slightly older.
-        # 5000 costs a few MB and buys a much longer window; deletions beyond it
-        # are still recorded by the raw handlers in cogs/audit.py, just without
-        # the content Discord no longer has.
+
         super().__init__(
             intents=intents,
             debug_guilds=[debug_guild] if debug_guild else None,
@@ -90,7 +77,6 @@ class SecurityBot(discord.Bot):
         self.config = config
         self.master_user = master_user
         self.CONN = None
-        # Message IDs deleted by the link filter — suppresses audit double-log
         self.deleted_by_filter = BoundedIdSet()
 
     async def on_ready(self):
@@ -103,8 +89,6 @@ class SecurityBot(discord.Bot):
                 print("FATAL: Could not connect to database. Shutting down.")
                 await self.close()
                 return
-            # Encrypt any TOTP secrets still stored in plaintext (no-op without
-            # ENCRYPTION_KEY, and safe to run on every start).
             two_factor_helper.migrate_plaintext_secrets(self.CONN)
 
         print(f'Logged in as {self.user} (ID: {self.user.id})')
@@ -130,11 +114,8 @@ def _load_master_user() -> int:
         sys.exit(1)
 
 
-bot = SecurityBot(_load_master_user())
+bot = Hodor(_load_master_user())
 
-# Load each cog independently. A single import error (e.g. a missing optional
-# dependency like openpyxl) previously propagated out of this loop and stopped
-# the whole bot from starting, taking every unrelated protection down with it.
 _failed_cogs = []
 for cog in COGS:
     try:
@@ -180,14 +161,18 @@ if __name__ == '__main__':
         bot.run(token)
     except discord.errors.HTTPException as e:
         if e.status == 429:
-            # Do NOT retry bot.run() in a loop: run() closes its event loop on
-            # exit (_cleanup_loop), so a second call fails with
-            # "Event loop is closed" rather than reconnecting. Back off, then
-            # exit non-zero and let the process supervisor (Procfile / systemd
-            # / Docker restart policy) start a fresh process.
             wait = 60
             print(f"[FATAL] Rate limited by Discord on startup (HTTP 429). "
                   f"Sleeping {wait}s, then exiting so the supervisor restarts a clean process.")
             time.sleep(wait)
             sys.exit(1)
         raise
+    except (aiohttp.ClientError, ssl.SSLError, TimeoutError) as e:
+        wait = 10
+        print(f"[WARN] Network error during startup: {type(e).__name__}: {e}")
+        print(f"       Exiting in {wait}s with code 1. Under run.ps1, Procfile, or a")
+        print( "       container host that restarts automatically. Started with")
+        print( "       'python bot.py' it just stops - use '.\\run.ps1' instead.")
+        print( "       Failing on every attempt means the link is dropping data.")
+        time.sleep(wait)
+        sys.exit(1)

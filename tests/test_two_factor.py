@@ -24,9 +24,7 @@ USER_ID = 100000000000000001
 GUILD_ID = 200000000000000001
 
 
-# ---------------------------------------------------------------------------
-# TOTP — verify_code
-# ---------------------------------------------------------------------------
+# TOTP - verify_code
 
 class TestVerifyCode:
     def test_valid_code(self, in_memory_db):
@@ -45,7 +43,7 @@ class TestVerifyCode:
         db_handler.insert_user(in_memory_db, (USER_ID, secret, 0))
         other_secret = pyotp.random_base32()
         wrong_code = int(pyotp.TOTP(other_secret).now())
-        # Could theoretically match — check that verify uses stored secret
+        # Could theoretically match - check that verify uses stored secret
         correct = pyotp.TOTP(secret).verify(f"{wrong_code:06d}")
         result = two_factor_helper.verify_code(in_memory_db, USER_ID, wrong_code)
         assert result == correct  # Must agree with pyotp
@@ -62,3 +60,49 @@ class TestVerifyCode:
         # Verify using the integer value (may be < 100000 if zero-padded)
         result = two_factor_helper.verify_code(in_memory_db, USER_ID, int(raw))
         assert result is True
+
+
+# code_matches - non-consuming diagnostic check
+#
+# Added after a real lockout: a database carried over from another deployment
+# held a secret that did not match the operator's authenticator. /verify
+# reported "already verified" without ever checking the code, so the mismatch
+# only surfaced later when a real command rejected them.
+
+class TestCodeMatches:
+    def test_matching_code(self, in_memory_db):
+        secret = pyotp.random_base32()
+        db_handler.insert_user(in_memory_db, (USER_ID, secret, 1))
+        code = int(pyotp.TOTP(secret).now())
+        assert two_factor_helper.code_matches(in_memory_db, USER_ID, code) is True
+
+    def test_code_from_a_different_secret(self, in_memory_db):
+        """The lockout case: authenticator paired to another deployment's secret."""
+        stored = pyotp.random_base32()
+        other = pyotp.random_base32()
+        db_handler.insert_user(in_memory_db, (USER_ID, stored, 1))
+        code = int(pyotp.TOTP(other).now())
+        assert two_factor_helper.code_matches(in_memory_db, USER_ID, code) is False
+
+    def test_does_not_consume_the_step(self, in_memory_db):
+        """
+        Diagnostic only: it must leave the code spendable, or checking one
+        would silently burn it and the next real command would fail.
+        """
+        secret = pyotp.random_base32()
+        db_handler.insert_user(in_memory_db, (USER_ID, secret, 1))
+        code = int(pyotp.TOTP(secret).now())
+
+        assert two_factor_helper.code_matches(in_memory_db, USER_ID, code) is True
+        assert db_handler.get_last_totp_step(in_memory_db, USER_ID) is None
+        # still usable for a real authentication afterwards
+        assert two_factor_helper.verify_code(in_memory_db, USER_ID, code) is True
+
+    def test_unknown_user(self, in_memory_db):
+        assert two_factor_helper.code_matches(in_memory_db, 999999999999999999, 123456) is False
+
+    def test_garbage_input(self, in_memory_db):
+        secret = pyotp.random_base32()
+        db_handler.insert_user(in_memory_db, (USER_ID, secret, 1))
+        assert two_factor_helper.code_matches(in_memory_db, USER_ID, None) is False
+        assert two_factor_helper.code_matches(in_memory_db, USER_ID, "abc") is False

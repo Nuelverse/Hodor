@@ -2,11 +2,11 @@
 Tests for link_scanner.py
 
 Covers all 5 detection passes and every documented evasion technique:
-  Pass 1 — Standard URLs on base-normalized text
-  Pass 2 — Angle bracket content
-  Pass 3 — Markdown link URLs
-  Pass 4 — Full-message deep scan (obfuscation, split lines, encoding)
-  Pass 5 — Non-http protocol:// detection
+  Pass 1 - Standard URLs on base-normalized text
+  Pass 2 - Angle bracket content
+  Pass 3 - Markdown link URLs
+  Pass 4 - Full-message deep scan (obfuscation, split lines, encoding)
+  Pass 5 - Non-http protocol:// detection
 
 Evasion techniques:
   - Split URLs across newlines / blockquote lines
@@ -30,14 +30,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from link_scanner import scan, find_urls, is_allowed, has_bad_protocol, _base_normalize, _deep_normalize
 
 
-# Whitelist helper — a small set of allowed entries for "clean" message tests
+# Whitelist helper - a small set of allowed entries for "clean" message tests
 _ALLOW_EXAMPLE = [("domain", "example.com"), ("specific", "https://allowed.org/page")]
 _EMPTY_WL = []
 
 
-# ---------------------------------------------------------------------------
 # Utility: clean messages must not be flagged
-# ---------------------------------------------------------------------------
 
 class TestCleanMessages:
     def test_plain_text_allowed(self):
@@ -61,9 +59,7 @@ class TestCleanMessages:
         assert blocked is False
 
 
-# ---------------------------------------------------------------------------
-# Pass 1 — Standard URL detection
-# ---------------------------------------------------------------------------
+# Pass 1 - Standard URL detection
 
 class TestPass1StandardURLs:
     def test_http_url_blocked(self):
@@ -95,7 +91,7 @@ class TestPass1StandardURLs:
         assert blocked is True
 
     def test_at_prefixed_url_blocked(self):
-        """https://@evil.com is a URL with empty username — still a URL."""
+        """https://@evil.com is a URL with empty username - still a URL."""
         blocked, _ = scan("link https://@evil.com/page", _EMPTY_WL)
         assert blocked is True
 
@@ -112,9 +108,7 @@ class TestPass1StandardURLs:
         assert blocked is True
 
 
-# ---------------------------------------------------------------------------
-# Pass 2 — Angle bracket content
-# ---------------------------------------------------------------------------
+# Pass 2 - Angle bracket content
 
 class TestPass2AngleBrackets:
     def test_plain_url_in_angle_brackets(self):
@@ -136,9 +130,7 @@ class TestPass2AngleBrackets:
         assert blocked is False
 
 
-# ---------------------------------------------------------------------------
-# Pass 3 — Markdown link URLs
-# ---------------------------------------------------------------------------
+# Pass 3 - Markdown link URLs
 
 class TestPass3MarkdownLinks:
     def test_markdown_link_blocked(self):
@@ -154,14 +146,12 @@ class TestPass3MarkdownLinks:
         assert blocked is False
 
     def test_markdown_link_with_angle_brackets_in_url(self):
-        """[text](<url>) — Discord strips <> in markdown."""
+        """[text](<url>) - Discord strips <> in markdown."""
         blocked, label = scan("[link](<https://evil.com>)", _EMPTY_WL)
         assert blocked is True
 
 
-# ---------------------------------------------------------------------------
-# Pass 4 — Deep scan / obfuscation bypass
-# ---------------------------------------------------------------------------
+# Pass 4 - Deep scan / obfuscation bypass
 
 class TestPass4DeepScan:
     def test_split_url_across_newlines(self):
@@ -171,45 +161,45 @@ class TestPass4DeepScan:
         assert blocked is True
 
     def test_split_url_blockquote_lines(self):
-        """> ht\n> tp\n> ://evil.com — Discord blockquote multi-line."""
+        """> ht\n> tp\n> ://evil.com - Discord blockquote multi-line."""
         content = "> ht\n> tp\n> ://evil.com"
         blocked, label = scan(content, _EMPTY_WL)
         assert blocked is True
 
     def test_markdown_asterisks_in_url(self):
-        """https*://*evil.com — asterisks injected in URL."""
+        """https*://*evil.com - asterisks injected in URL."""
         content = "https*://*evil.com"
         blocked, _ = scan(content, _EMPTY_WL)
         assert blocked is True
 
     def test_bold_markdown_split_url(self):
-        """**https://**evil.com — bold wrapping scheme."""
+        """**https://**evil.com - bold wrapping scheme."""
         content = "**https://**evil.com"
         blocked, _ = scan(content, _EMPTY_WL)
         assert blocked is True
 
     def test_extra_slashes_in_url(self):
-        """https:////\\\\evil.com — excess slashes collapsed."""
+        """https:////\\\\evil.com - excess slashes collapsed."""
         content = "https:////\\\\evil.com"
         blocked, _ = scan(content, _EMPTY_WL)
         assert blocked is True
 
     def test_percent_encoded_domain(self):
-        """%68%74%74%70%73://evil.com — single percent-encoded scheme."""
+        """%68%74%74%70%73://evil.com - single percent-encoded scheme."""
         # https:// in percent encoding
         content = "%68%74%74%70%73://%65%76%69%6c.%63%6f%6d"
         blocked, _ = scan(content, _EMPTY_WL)
         assert blocked is True
 
     def test_double_percent_encoded_domain(self):
-        """%2568%2574%2574%2570%2573:// — double-encoded."""
+        """%2568%2574%2574%2570%2573:// - double-encoded."""
         # Double-encode 'h' → %25 + '68' = '%2568'
         content = "%2568%2574%2574%2570%2573://%2565%2576%2569%256c.%2563%256f%256d"
         blocked, _ = scan(content, _EMPTY_WL)
         assert blocked is True
 
     def test_unicode_lookalike_slashes(self):
-        """⁄ and ∕ are lookalike slashes — should normalize to /."""
+        """⁄ and ∕ are lookalike slashes - should normalize to /."""
         content = "https:⁄⁄evil.com⁄path"
         blocked, _ = scan(content, _EMPTY_WL)
         assert blocked is True
@@ -227,15 +217,13 @@ class TestPass4DeepScan:
         assert blocked is True
 
     def test_backslashes_as_slashes(self):
-        """https:\\\\evil.com — backslashes treated as forward slashes."""
+        """https:\\\\evil.com - backslashes treated as forward slashes."""
         content = "https:\\\\evil.com"
         blocked, _ = scan(content, _EMPTY_WL)
         assert blocked is True
 
 
-# ---------------------------------------------------------------------------
-# Pass 5 — Non-http protocol detection
-# ---------------------------------------------------------------------------
+# Pass 5 - Non-http protocol detection
 
 class TestPass5NonHttpProtocols:
     def test_ftp_protocol_blocked(self):
@@ -259,7 +247,7 @@ class TestPass5NonHttpProtocols:
         assert blocked is True
 
     def test_mixed_case_protocol_blocked(self):
-        """dIsCoRd:// — mixed case must still be caught."""
+        """dIsCoRd:// - mixed case must still be caught."""
         blocked, _ = scan("dIsCoRd://evil.server", _EMPTY_WL)
         assert blocked is True
 
@@ -268,9 +256,7 @@ class TestPass5NonHttpProtocols:
         assert blocked is True
 
 
-# ---------------------------------------------------------------------------
-# is_allowed — whitelist matching
-# ---------------------------------------------------------------------------
+# is_allowed - whitelist matching
 
 class TestIsAllowed:
     def test_domain_exact_match(self):
@@ -309,14 +295,12 @@ class TestIsAllowed:
         assert is_allowed("example.com/path", wl) is True
 
     def test_at_user_in_url_netloc_stripped(self):
-        """https://user@example.com — the @user should be stripped from netloc."""
+        """https://user@example.com - the @user should be stripped from netloc."""
         wl = [("domain", "example.com")]
         assert is_allowed("https://user@example.com/path", wl) is True
 
 
-# ---------------------------------------------------------------------------
 # has_bad_protocol
-# ---------------------------------------------------------------------------
 
 class TestHasBadProtocol:
     def test_javascript(self):
@@ -339,9 +323,7 @@ class TestHasBadProtocol:
         assert has_bad_protocol("steam://rungame/123") is True
 
 
-# ---------------------------------------------------------------------------
-# _deep_normalize — unit tests for normalization helpers
-# ---------------------------------------------------------------------------
+# _deep_normalize - unit tests for normalization helpers
 
 class TestDeepNormalize:
     def test_strips_invisible_chars(self):

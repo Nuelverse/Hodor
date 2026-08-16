@@ -1,17 +1,4 @@
-"""
-Admin — server management commands for bot owners and server owners.
-
-Commands:
-  /setup-guild          — Bot owner: initialize the server (one-time setup).
-  /add-announcer        — Owner + 2FA: add a user to the announcers list.
-  /remove-announcer     — Owner + 2FA: remove a user from announcers.
-  /add-linkmanager      — Owner + 2FA: add a user to link managers.
-  /remove-linkmanager   — Owner + 2FA: remove a user from link managers.
-  /set-logs             — Owner: change the log channel.
-  /change-timeout       — Bot owner: change the announcement permission lifetime.
-  /list                 — Any registered user: view configured lists.
-  /list-all             — Owner: view all managers and announcers at once.
-"""
+# Admin - server management commands for bot owners and server owners.
 
 import discord
 from discord.ext import commands
@@ -23,17 +10,13 @@ import permissions
 import logger
 
 
-# ---------------------------------------------------------------------------
 # Cog
-# ---------------------------------------------------------------------------
 
 class Admin(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    # ------------------------------------------------------------------
     # /setup-guild  (bot owner + 2FA, one-time)
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.cooldown(1, 5, commands.BucketType.user)
@@ -86,9 +69,7 @@ class Admin(commands.Cog):
         except (discord.Forbidden, discord.HTTPException):
             pass
 
-    # ------------------------------------------------------------------
     # /add-announcer  (owner + 2FA)
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.cooldown(1, 5, commands.BucketType.user)
@@ -139,9 +120,7 @@ class Admin(commands.Cog):
             level='success'
         )
 
-    # ------------------------------------------------------------------
     # /remove-announcer  (owner + 2FA)
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.cooldown(1, 5, commands.BucketType.user)
@@ -179,9 +158,7 @@ class Admin(commands.Cog):
             level='warning'
         )
 
-    # ------------------------------------------------------------------
     # /add-linkmanager  (owner + 2FA)
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.cooldown(1, 5, commands.BucketType.user)
@@ -231,9 +208,7 @@ class Admin(commands.Cog):
             level='success'
         )
 
-    # ------------------------------------------------------------------
     # /remove-linkmanager  (owner + 2FA)
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.cooldown(1, 5, commands.BucketType.user)
@@ -270,9 +245,7 @@ class Admin(commands.Cog):
             level='warning'
         )
 
-    # ------------------------------------------------------------------
     # /set-logs  (owner)
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.cooldown(1, 5, commands.BucketType.user)
@@ -314,9 +287,7 @@ class Admin(commands.Cog):
         except (discord.Forbidden, discord.HTTPException):
             pass
 
-    # ------------------------------------------------------------------
     # /change-timeout  (bot owner)
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.cooldown(1, 5, commands.BucketType.user)
@@ -350,9 +321,7 @@ class Admin(commands.Cog):
             level='info'
         )
 
-    # ------------------------------------------------------------------
     # /list  (any registered user)
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.slash_command(description="List configured information for this server.")
@@ -467,9 +436,7 @@ class Admin(commands.Cog):
                 )
             await ctx.respond(embed=embed, ephemeral=True)
 
-    # ------------------------------------------------------------------
-    # /add-channel  (owner — add an announcement channel)
-    # ------------------------------------------------------------------
+    # /add-channel  (owner - add an announcement channel)
 
     @commands.guild_only()
     @commands.cooldown(1, 5, commands.BucketType.user)
@@ -508,9 +475,7 @@ class Admin(commands.Cog):
             level='success'
         )
 
-    # ------------------------------------------------------------------
-    # /remove-channel  (owner — remove an announcement channel)
-    # ------------------------------------------------------------------
+    # /remove-channel  (owner - remove an announcement channel)
 
     @commands.guild_only()
     @commands.cooldown(1, 5, commands.BucketType.user)
@@ -549,9 +514,7 @@ class Admin(commands.Cog):
             level='warning'
         )
 
-    # ------------------------------------------------------------------
-    # /list-all  (owner — everything at once)
-    # ------------------------------------------------------------------
+    # /list-all  (owner - everything at once)
 
     @commands.guild_only()
     @commands.slash_command(
@@ -615,7 +578,6 @@ class Admin(commands.Cog):
         embed.add_field(name=f"Announce Channels ({len(channels)})", value=fmt_channels(channels), inline=False)
 
         await ctx.respond(embed=embed, ephemeral=True)
-
 
 
 def setup(bot):

@@ -17,11 +17,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import db_handler
 import permissions
+import inspect
+import cogs.link_filter as link_filter_cog
+import cogs.name_filter as name_filter_cog
 
 
-# ---------------------------------------------------------------------------
 # Shared IDs
-# ---------------------------------------------------------------------------
 
 BOT_OWNER_ID   = 999999999999999999   # same as mock_bot.master_user in conftest
 GUILD_OWNER_ID = 111111111111111111
@@ -31,9 +32,7 @@ ANNOUNCER_ID   = 400000000000000001
 RANDOM_ID      = 500000000000000001
 
 
-# ---------------------------------------------------------------------------
 # Helpers to build bot/ctx fixtures
-# ---------------------------------------------------------------------------
 
 def _make_bot(in_memory_db):
     bot = types.SimpleNamespace()
@@ -66,9 +65,7 @@ def _setup_unverified_user(conn, user_id):
     db_handler.insert_user(conn, (user_id, "DUMMY", 0))
 
 
-# ---------------------------------------------------------------------------
 # is_bot_owner
-# ---------------------------------------------------------------------------
 
 class TestIsBotOwner:
     def test_returns_true_for_master_user(self, in_memory_db):
@@ -80,9 +77,7 @@ class TestIsBotOwner:
         assert permissions.is_bot_owner(bot, RANDOM_ID) is False
 
 
-# ---------------------------------------------------------------------------
 # is_server_owner
-# ---------------------------------------------------------------------------
 
 class TestIsServerOwner:
     def test_returns_true_for_guild_owner(self, in_memory_db):
@@ -94,9 +89,7 @@ class TestIsServerOwner:
         assert permissions.is_server_owner(ctx) is False
 
 
-# ---------------------------------------------------------------------------
 # is_2fa_ready
-# ---------------------------------------------------------------------------
 
 class TestIs2faReady:
     def test_verified_user_is_ready(self, in_memory_db):
@@ -114,9 +107,7 @@ class TestIs2faReady:
         assert permissions.is_2fa_ready(bot, RANDOM_ID) is False
 
 
-# ---------------------------------------------------------------------------
 # is_link_manager / is_announcer / is_registered
-# ---------------------------------------------------------------------------
 
 class TestRoleChecks:
     def test_is_link_manager_true(self, in_memory_db):
@@ -152,9 +143,7 @@ class TestRoleChecks:
         assert permissions.is_registered(bot, GUILD_ID, RANDOM_ID) is False
 
 
-# ---------------------------------------------------------------------------
 # can_setup_2fa
-# ---------------------------------------------------------------------------
 
 class TestCanSetup2FA:
     def test_bot_owner_can_setup(self, in_memory_db):
@@ -185,9 +174,7 @@ class TestCanSetup2FA:
         assert permissions.can_setup_2fa(bot, ctx) is False
 
 
-# ---------------------------------------------------------------------------
-# check() — bot_owner level
-# ---------------------------------------------------------------------------
+# check() - bot_owner level
 
 class TestCheckBotOwner:
     def test_bot_owner_with_2fa_allowed(self, in_memory_db):
@@ -221,9 +208,7 @@ class TestCheckBotOwner:
         assert ok is False
 
 
-# ---------------------------------------------------------------------------
-# check() — owner level
-# ---------------------------------------------------------------------------
+# check() - owner level
 
 class TestCheckOwner:
     def test_bot_owner_with_2fa_allowed(self, in_memory_db):
@@ -254,9 +239,7 @@ class TestCheckOwner:
         assert ok is False
 
 
-# ---------------------------------------------------------------------------
-# check() — owner_no_2fa level
-# ---------------------------------------------------------------------------
+# check() - owner_no_2fa level
 
 class TestCheckOwnerNo2FA:
     def test_bot_owner_without_2fa_allowed(self, in_memory_db):
@@ -285,9 +268,7 @@ class TestCheckOwnerNo2FA:
         assert ok is False
 
 
-# ---------------------------------------------------------------------------
-# check() — link_manager level
-# ---------------------------------------------------------------------------
+# check() - link_manager level
 
 class TestCheckLinkManager:
     def test_link_manager_with_2fa_allowed(self, in_memory_db):
@@ -343,9 +324,7 @@ class TestCheckLinkManager:
         assert ok is False
 
 
-# ---------------------------------------------------------------------------
-# check() — announcer level
-# ---------------------------------------------------------------------------
+# check() - announcer level
 
 class TestCheckAnnouncer:
     def test_announcer_with_2fa_allowed(self, in_memory_db):
@@ -386,9 +365,7 @@ class TestCheckAnnouncer:
         assert ok is False
 
 
-# ---------------------------------------------------------------------------
-# check() — any_registered level
-# ---------------------------------------------------------------------------
+# check() - any_registered level
 
 class TestCheckAnyRegistered:
     def test_link_manager_allowed_no_2fa_needed(self, in_memory_db):
@@ -424,9 +401,7 @@ class TestCheckAnyRegistered:
         assert ok is False
 
 
-# ---------------------------------------------------------------------------
 # guild_required
-# ---------------------------------------------------------------------------
 
 class TestGuildRequired:
     def test_initialized_guild_passes(self, in_memory_db):
@@ -442,3 +417,85 @@ class TestGuildRequired:
         ok, msg = permissions.guild_required(bot, ctx)
         assert ok is False
         assert "setup" in msg.lower() or "set up" in msg.lower()
+
+
+# Filter exemptions after the "nothing goes behind" change
+#
+# Privileged accounts used to be skipped entirely by both filters. That is the
+# opposite of what you want: a stolen owner or staff account is the most
+# valuable one an attacker can get, and it was the only account whose links
+# were never scanned. Everyone is checked now; only irreversible name-filter
+# actions are still withheld from staff.
+
+class TestNoIdentityBypassInLinkFilter:
+    def test_link_filter_has_no_owner_bypass(self):
+        """The implicit master/server-owner bypass must stay gone."""
+        src = inspect.getsource(link_filter_cog.LinkFilter._is_bypassed)
+        assert "master_user" not in src, (
+            "link filter regained an implicit operator bypass - a phished "
+            "owner account would post unscanned links"
+        )
+        assert "owner_id" not in src, (
+            "link filter regained an implicit server-owner bypass"
+        )
+
+    def test_link_filter_still_honours_explicit_exemptions(self):
+        """Opt-in exemptions via /add-whitelist-linkfilter must still work."""
+        src = inspect.getsource(link_filter_cog.LinkFilter._is_bypassed)
+        assert "is_filter_exempt" in src
+
+
+class TestNameFilterProtectsOnlyDestructiveActions:
+    """
+    The filter has two separate exemption tiers and they must not merge.
+
+      _is_privileged  - implicit (owner, mod perms, announcer). Downgrades
+                        the action to 'flag' but STILL LOGS. A staff account
+                        renaming itself to "MetaMask Support" is what a
+                        compromise looks like, so it must stay visible.
+
+      _is_role_exempt - an operator explicitly exempted a role. Skips the
+                        scan outright, no log entry.
+
+    Collapsing the first into the second would silently hide compromised
+    staff accounts, which is the bug these tests exist to prevent.
+    """
+
+    def test_privileged_members_are_still_matched(self):
+        """Privileged status must not short-circuit the check itself."""
+        join_src = inspect.getsource(name_filter_cog.NameFilter.on_member_join)
+        assert "_is_privileged" not in join_src, (
+            "on_member_join skips privileged members again - they would never "
+            "be flagged, which is the bug this replaced"
+        )
+
+    def test_take_action_downgrades_privileged_instead_of_skipping(self):
+        src = inspect.getsource(name_filter_cog._take_action)
+        assert "_is_privileged" in src and "downgraded" in src, (
+            "_take_action must downgrade destructive actions for privileged "
+            "members rather than skipping them entirely"
+        )
+
+    def test_role_exempt_members_are_skipped_before_matching(self):
+        """Explicit role exemptions are a full skip - no action, no log."""
+        join_src = inspect.getsource(name_filter_cog.NameFilter.on_member_join)
+        assert "_is_role_exempt" in join_src, (
+            "on_member_join must skip explicitly exempted roles before matching"
+        )
+
+    def test_take_action_also_guards_role_exempt(self):
+        """Defence in depth: a missed call site must not ban a staff member."""
+        src = inspect.getsource(name_filter_cog._take_action)
+        assert "_is_role_exempt" in src, (
+            "_take_action lost its role-exemption guard"
+        )
+
+    def test_role_exemption_is_not_implicit(self):
+        """
+        Exemption must come from the database, never from a permission bit.
+        Otherwise any moderator role would silently become invisible to the
+        filter without the owner ever choosing that.
+        """
+        src = inspect.getsource(name_filter_cog._is_role_exempt)
+        assert "get_name_filter_exempt_roles" in src
+        assert "guild_permissions" not in src

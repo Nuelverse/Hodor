@@ -1,24 +1,4 @@
-"""
-Embeds — build and manage rich Discord embeds sent as the bot.
-
-Commands (all under /embed):
-  /embed send   channel:<ch> code:<2FA>
-      Announcers and owners. 2FA verified, then a modal opens to build
-      the embed. A live preview is shown before posting.
-
-  /embed edit   message_id:<id> channel:<ch> code:<2FA>
-      Edit a previously sent bot embed. Pre-fills the modal with the
-      current content so only changed fields need updating.
-
-  /embed delete message_id:<id> channel:<ch> code:<2FA>
-      Permanently delete a bot-sent embed and remove its DB record.
-
-  /embed list   [channel:<ch>]
-      List the 10 most recent bot embeds in this server (or a specific
-      channel). No 2FA required — read-only.
-
-Default brand color: #5865f2 (Discord blurple) — applied when color is left blank.
-"""
+# Embeds - build and manage rich Discord embeds sent as the bot.
 
 import discord
 from discord.ext import commands
@@ -29,12 +9,10 @@ import two_factor_helper
 import permissions
 import logger
 
-BRAND_COLOR = 0x5865F2  # Default brand color (Discord blurple) — change to match your server's branding
+BRAND_COLOR = 0x5865F2  # Default brand color (Discord blurple) - change to match your server's branding
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 def _parse_color(value: str) -> int:
     """Parse a hex color string (#rrggbb or rrggbb) to int. Falls back to BRAND_COLOR."""
@@ -62,9 +40,7 @@ def _build_discord_embed(title, description, color, footer, image_url) -> discor
     return embed
 
 
-# ---------------------------------------------------------------------------
 # Modal: build or pre-filled edit
-# ---------------------------------------------------------------------------
 
 class EmbedBuilderModal(discord.ui.Modal):
     def __init__(self, bot, channel, guild, prefill: dict = None, edit_message=None):
@@ -157,9 +133,7 @@ class EmbedBuilderModal(discord.ui.Modal):
         )
 
 
-# ---------------------------------------------------------------------------
 # View: Send / Update / Cancel
-# ---------------------------------------------------------------------------
 
 class EmbedConfirmView(discord.ui.View):
     def __init__(self, bot, embed, channel, guild, author, embed_data, edit_message=None):
@@ -183,6 +157,14 @@ class EmbedConfirmView(discord.ui.View):
         )
         self.confirm_btn.callback = self._on_confirm
 
+        self.superseded = False
+        self.edit_btn = discord.ui.Button(
+            label="Edit",
+            style=discord.ButtonStyle.secondary,
+            emoji="📝",
+        )
+        self.edit_btn.callback = self._on_edit
+
         self.cancel_btn = discord.ui.Button(
             label="Cancel",
             style=discord.ButtonStyle.danger,
@@ -191,12 +173,43 @@ class EmbedConfirmView(discord.ui.View):
         self.cancel_btn.callback = self._on_cancel
 
         self.add_item(self.confirm_btn)
+        self.add_item(self.edit_btn)
         self.add_item(self.cancel_btn)
+
+    async def _on_edit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author.id:
+            await interaction.response.send_message(
+                "This preview belongs to someone else.", ephemeral=True
+            )
+            return
+
+        ed = self.embed_data
+        # embed_data holds the colour as an int; the modal field wants hex text.
+        prefill = {
+            'title':       ed['title'],
+            'description': ed['description'],
+            'color':       f"#{ed['color']:06x}",
+            'footer':      ed['footer'],
+            'image_url':   ed['image_url'],
+        }
+
+        self.superseded = True
+        await interaction.response.send_modal(EmbedBuilderModal(
+            self.bot, self.channel, self.guild,
+            prefill=prefill, edit_message=self.edit_message,
+        ))
 
     async def _on_confirm(self, interaction: discord.Interaction):
         if interaction.user.id != self.author.id:
             await interaction.response.send_message(
                 "This preview belongs to someone else.", ephemeral=True
+            )
+            return
+
+        if self.superseded:
+            await interaction.response.edit_message(
+                content="You edited this after previewing it - use the newer preview below.",
+                embed=None, view=None,
             )
             return
 
@@ -277,9 +290,7 @@ class EmbedConfirmView(discord.ui.View):
         self.stop()
 
 
-# ---------------------------------------------------------------------------
 # Cog
-# ---------------------------------------------------------------------------
 
 class Embeds(commands.Cog):
     def __init__(self, bot):
@@ -290,9 +301,7 @@ class Embeds(commands.Cog):
         "Build and manage bot embeds",
     )
 
-    # ------------------------------------------------------------------
     # /embed send
-    # ------------------------------------------------------------------
 
     @embed.command(
         name="send",
@@ -337,9 +346,7 @@ class Embeds(commands.Cog):
             EmbedBuilderModal(bot=self.bot, channel=channel, guild=ctx.guild)
         )
 
-    # ------------------------------------------------------------------
     # /embed edit
-    # ------------------------------------------------------------------
 
     @embed.command(
         name="edit",
@@ -424,9 +431,7 @@ class Embeds(commands.Cog):
             )
         )
 
-    # ------------------------------------------------------------------
     # /embed delete
-    # ------------------------------------------------------------------
 
     @embed.command(
         name="delete",
@@ -475,14 +480,14 @@ class Embeds(commands.Cog):
 
         try:
             if isinstance(channel, discord.ForumChannel):
-                # For forum posts, mid is the thread ID — delete the whole thread
+                # For forum posts, mid is the thread ID - delete the whole thread
                 thread = await ctx.guild.fetch_channel(mid)
                 await thread.delete()
             else:
                 msg = await channel.fetch_message(mid)
                 await msg.delete()
         except discord.NotFound:
-            pass  # Already gone from Discord — still clean up DB
+            pass  # Already gone from Discord - still clean up DB
         except (discord.Forbidden, discord.HTTPException) as exc:
             await ctx.respond(f"Failed to delete: {exc}", ephemeral=True)
             return
@@ -502,9 +507,7 @@ class Embeds(commands.Cog):
             level='warning',
         )
 
-    # ------------------------------------------------------------------
     # /embed list
-    # ------------------------------------------------------------------
 
     @embed.command(
         name="list",

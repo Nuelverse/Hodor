@@ -1,5 +1,5 @@
 """
-Link Filter — scans all messages for non-whitelisted links and deletes them.
+Link Filter - scans all messages for non-whitelisted links and deletes them.
 
 Commands:
   /allow-link type:[domain|specific]     Link manager + 2FA (via modal, supports bulk)
@@ -7,8 +7,6 @@ Commands:
   /toggle-linkfilter code:<2FA>          Bot owner + 2FA
   /add-whitelist-linkfilter              Bot/server owner + 2FA (exempt entity from filter)
   /remove-whitelist-linkfilter           Bot/server owner + 2FA
-
-The scanner runs on every message and every edit across all configured guilds.
 """
 
 import discord
@@ -21,9 +19,7 @@ import logger
 import link_scanner
 
 
-# ---------------------------------------------------------------------------
 # Modal: bulk URL whitelisting
-# ---------------------------------------------------------------------------
 
 class AllowLinkModal(discord.ui.Modal):
     def __init__(self, bot, guild: discord.Guild, link_type: str):
@@ -74,7 +70,7 @@ class AllowLinkModal(discord.ui.Modal):
 
         added, dupes = [], []
         for url in urls:
-            # For domain type, strip protocol and path — keep only the domain
+            # For domain type, strip protocol and path - keep only the domain
             if self.link_type == "domain":
                 url = _extract_domain(url)
             ok = db_handler.add_link_whitelist(
@@ -117,27 +113,19 @@ def _extract_domain(url: str) -> str:
     return url
 
 
-# ---------------------------------------------------------------------------
 # Cog
-# ---------------------------------------------------------------------------
 
 class LinkFilter(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    # ------------------------------------------------------------------
     # Bypass check (who is exempt from the link filter)
-    # ------------------------------------------------------------------
 
     def _is_bypassed(self, message: discord.Message) -> bool:
         uid = message.author.id
         gid = message.guild.id
 
-        # Bot owner and server owner always bypass
-        if uid == self.bot.master_user or uid == message.guild.owner_id:
-            return True
-
-        # Check user-specific exemption
+        # Check user exemption
         if db_handler.is_filter_exempt(self.bot.CONN, gid, 'user', uid):
             return True
 
@@ -150,12 +138,11 @@ class LinkFilter(commands.Cog):
                 self.bot.CONN, gid, 'category', message.channel.category_id):
             return True
 
-        # Check role exemptions (single efficient query)
+        # Check role exemptions
         role_ids = [r.id for r in message.author.roles]
         if db_handler.is_filter_exempt_by_roles(self.bot.CONN, gid, role_ids):
             return True
 
-        # Legacy config-based role bypass
         ignore_ids = self.bot.config.get("link_filter", {}).get("ignore_roles", [])
         return any(r.id in ignore_ids for r in message.author.roles)
 
@@ -165,9 +152,7 @@ class LinkFilter(commands.Cog):
             and db_handler.get_link_filter_enabled(self.bot.CONN, guild_id)
         )
 
-    # ------------------------------------------------------------------
     # on_message
-    # ------------------------------------------------------------------
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -190,9 +175,7 @@ class LinkFilter(commands.Cog):
                 self.bot, message.guild, message.author, message.channel, label, message.content
             )
 
-    # ------------------------------------------------------------------
     # on_message_edit
-    # ------------------------------------------------------------------
 
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
@@ -217,9 +200,7 @@ class LinkFilter(commands.Cog):
                 self.bot, after.guild, after.author, after.channel, label, after.content, edited=True
             )
 
-    # ------------------------------------------------------------------
     # /allow-link  (link manager + 2FA via modal)
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.slash_command(
@@ -242,9 +223,7 @@ class LinkFilter(commands.Cog):
         modal = AllowLinkModal(self.bot, ctx.guild, type)
         await ctx.send_modal(modal)
 
-    # ------------------------------------------------------------------
     # /remove-link  (link manager + 2FA)
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.slash_command(
@@ -281,9 +260,7 @@ class LinkFilter(commands.Cog):
             level='warning'
         )
 
-    # ------------------------------------------------------------------
     # /toggle-linkfilter  (bot owner + 2FA)
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.slash_command(
@@ -319,9 +296,7 @@ class LinkFilter(commands.Cog):
             level='success' if new_state else 'warning'
         )
 
-    # ------------------------------------------------------------------
     # /add-whitelist-linkfilter  (bot/server owner + 2FA)
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.slash_command(
@@ -372,9 +347,7 @@ class LinkFilter(commands.Cog):
             level='info'
         )
 
-    # ------------------------------------------------------------------
     # /remove-whitelist-linkfilter  (bot/server owner + 2FA)
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.slash_command(

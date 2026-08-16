@@ -1,16 +1,3 @@
-"""
-Webhook Protection — automatically deletes unauthorized webhooks.
-
-Webhook protection is ON by default when a guild is set up.
-
-Commands:
-  /allow-webhook code:<2FA>  — Bot owner: temporarily disable protection for 30 minutes
-                               to allow legitimate webhook creation.
-
-The on_webhooks_update listener checks both the permanent DB flag and the
-temporary disable window before deciding to delete a webhook.
-"""
-
 import discord
 from discord.ext import commands, tasks
 from discord.commands import Option
@@ -23,13 +10,6 @@ import logger
 
 
 def _utcnow_naive() -> datetime:
-    """
-    Current UTC time as a naive datetime.
-
-    datetime.utcnow() is deprecated from Python 3.12, but the temp-disable
-    window is stored as a naive ISO string, so we keep producing naive values
-    rather than breaking comparisons against rows already in the database.
-    """
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
@@ -41,9 +21,7 @@ class Webhooks(commands.Cog):
     def cog_unload(self):
         self.check_temp_disables.cancel()
 
-    # ------------------------------------------------------------------
     # Background task: re-enable protection when 30-min window expires
-    # ------------------------------------------------------------------
 
     @tasks.loop(minutes=1)
     async def check_temp_disables(self):
@@ -73,9 +51,7 @@ class Webhooks(commands.Cog):
     async def before_check(self):
         await self.bot.wait_until_ready()
 
-    # ------------------------------------------------------------------
     # Helpers
-    # ------------------------------------------------------------------
 
     def _build_log_embed(self, color: int, user, channel, action: str) -> discord.Embed:
         embed = discord.Embed(title="Webhook Event", color=color, timestamp=_utcnow_naive())
@@ -89,9 +65,7 @@ class Webhooks(commands.Cog):
         embed.set_footer(text=f"Guild: {channel.guild.name}")
         return embed
 
-    # ------------------------------------------------------------------
-    # on_webhooks_update — core protection listener
-    # ------------------------------------------------------------------
+    # on_webhooks_update - core protection listener
 
     @commands.Cog.listener("on_webhooks_update")
     async def on_webhooks_update(self, channel: discord.abc.GuildChannel):
@@ -174,9 +148,7 @@ class Webhooks(commands.Cog):
                 f"Unauthorized webhook deleted (ID: {webhook.id})."
             ))
 
-    # ------------------------------------------------------------------
     # /allow-webhook  (bot owner + 2FA)
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.slash_command(

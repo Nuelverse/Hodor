@@ -1,30 +1,4 @@
-"""
-Name Filter — block users whose username or nickname matches configured patterns.
-
-Commands (all under /name-filter):
-  /name-filter add phrase <pattern>      Add a single phrase (substring) filter
-  /name-filter add regex <pattern>       Add a single regex pattern filter
-  /name-filter import phrase             Paste 50+ phrase filters at once via modal
-  /name-filter import regex              Paste 50+ regex filters at once via modal
-  /name-filter remove <id>               Remove a filter by its ID
-  /name-filter list [page]               Browse all active filters, 10 per page
-  /name-filter test <name>               Check if a name would be caught
-  /name-filter set-action <action>       Configure what happens on a match (ban/kick/timeout)
-  /name-filter cleanse                   Retroactively scan all current members
-
-Triggers:
-  - on_member_join       — username and display name checked immediately on join
-  - on_member_update     — nickname changes checked in real time
-  - on_user_update       — global username changes checked across all shared guilds
-
-Exempt from filtering:
-  - Bots
-  - Bot master user (MASTER_USER_ID)
-  - Trusted members (announcers) registered in the guild
-
-Default action: ban. Configurable per guild via /name-filter set-action.
-"""
-
+# Name Filter - block users whose username or nickname matches configured patterns.
 import asyncio
 import re
 import time
@@ -40,37 +14,19 @@ import permissions
 import two_factor_helper
 
 
-# ---------------------------------------------------------------------------
 # Internal helpers
-# ---------------------------------------------------------------------------
 
 MAX_PATTERN_LENGTH = 200
 
-# /name-filter cleanse refuses to run when it would hit more than this share of
-# eligible members (and more than this many people), on the assumption that a
-# filter matching most of the server is a mistake rather than an attack.
 CLEANSE_ABORT_SHARE = 0.25
 CLEANSE_ABORT_MIN = 10
 
-# ---------------------------------------------------------------------------
-# Burst (raid) log aggregation
-#
-# Discord allows roughly 5 messages per 5 seconds in a channel. A 500-account
-# raid producing one embed per match is ~8 minutes of backlog: the log channel
-# becomes the bottleneck, every other log queues behind it, and the bot looks
-# frozen precisely when someone is watching it.
-#
-# So: below the threshold, log each match individually (the normal, useful
-# case). Once matches arrive faster than that, switch to collecting them and
-# emitting one periodic summary until the burst ends.
-# ---------------------------------------------------------------------------
-
-BURST_THRESHOLD = 8       # matches within the window before aggregating
-BURST_WINDOW = 20.0       # seconds
+BURST_THRESHOLD = 8
+BURST_WINDOW = 20.0
 BURST_FLUSH_INTERVAL = 15.0
-BURST_SUMMARY_SAMPLE = 15  # names shown per summary embed
-BURST_MAX_TRACKED = 500    # cap on the rolling timestamp window
-BURST_MAX_BUFFERED = 1000  # cap on names held for the next summary
+BURST_SUMMARY_SAMPLE = 15
+BURST_MAX_TRACKED = 500
+BURST_MAX_BUFFERED = 1000
 
 
 class _BurstTracker:
@@ -87,13 +43,9 @@ class _BurstTracker:
         now = time.monotonic()
         self.recent = [t for t in self.recent if now - t < BURST_WINDOW]
         self.recent.append(now)
-        # Age-based pruning alone is not enough: a heavy raid can land tens of
-        # thousands of matches inside one window, and we only ever need to know
-        # that the threshold was crossed. Keep the list bounded.
         if len(self.recent) > BURST_MAX_TRACKED:
             del self.recent[:-BURST_MAX_TRACKED]
         if len(self.buffer) > BURST_MAX_BUFFERED:
-            # Keep the earliest entries — they identify the start of the attack.
             del self.buffer[BURST_MAX_BUFFERED:]
         if len(self.recent) >= BURST_THRESHOLD:
             if not self.active:
@@ -149,20 +101,10 @@ async def _flush_burst(bot, guild: discord.Guild, force: bool = False):
         level='critical',
     )
 
-# Constructs that make catastrophic backtracking possible.
-#
-#   1. A quantified group containing a quantifier:  (a+)+  (a*)*  (ab+)*
-#   2. A quantified group containing an alternation: (a|a)+  (a|ab)+
-#
-# The second form is just as explosive as the first — the engine has to try
-# every combination of branches — but the original rule only looked for nested
-# quantifiers, so (a|a)+ sailed through. Quantified alternations are rare in
-# legitimate name filters, so rejecting the whole shape is the right trade.
+
 _NESTED_QUANTIFIER = re.compile(r"\([^)]*[+*}][^)]*\)\s*[+*{]")
 _QUANTIFIED_ALTERNATION = re.compile(r"\((?![?]:?[=!<])[^)]*\|[^)]*\)\s*[+*{]")
 
-# Names are short; anything longer is truncated before matching so a pathological
-# pattern has little input to chew on even if one slips through.
 _MAX_NAME_LENGTH = 128
 
 
@@ -170,10 +112,9 @@ def validate_regex(pattern: str) -> tuple[bool, str]:
     """
     Check a user-supplied regex is safe to run on the event loop.
 
-    re.compile() only catches syntax errors. It happily accepts patterns like
-    (a+)+$ whose backtracking is exponential in the input length — running one
-    of those on every join / nickname change would freeze the entire bot, not
-    just the name filter. Reject the dangerous shapes up front.
+    re.compile() only catches syntax errors. It accepts patterns like (a+)+$
+    whose backtracking is exponential, and one of those on every join would
+    freeze the whole bot. Reject the dangerous shapes up front.
     """
     if not pattern or not pattern.strip():
         return False, "Pattern is empty."
@@ -199,11 +140,6 @@ def validate_regex(pattern: str) -> tuple[bool, str]:
 
 
 def _match(filters: list, name: str):
-    """
-    Check `name` against every filter in the list.
-    Returns (matched_filter_dict, name) on first match, or (None, None).
-    Silently skips filters with broken regex rather than crashing.
-    """
     if not name:
         return None, None
     # Bound the work a single pattern can do, regardless of what got stored.
@@ -222,16 +158,31 @@ def _match(filters: list, name: str):
     return None, None
 
 
-def _is_exempt(bot, guild: discord.Guild, member_id: int) -> bool:
+def _is_role_exempt(bot, guild: discord.Guild, member: discord.Member) -> bool:
     """
-    Return True if this member should be skipped by the name filter.
+    True when an operator explicitly exempted a role this member holds.
 
-    Exempt: bot master, server owner, server staff (anyone who can kick, ban,
-    moderate, or administer), announcers, and link managers.
+    This is a hard skip: no action, no log entry, nothing. It is deliberately
+    separate from _is_privileged below. An exempt role is a standing decision
+    ("our team's names are not the filter's business"), so logging every staff
+    rename would just train moderators to ignore the channel.
+    """
+    if member is None:
+        return False
+    exempt = db_handler.get_name_filter_exempt_roles(bot.CONN, guild.id)
+    if not exempt:
+        return False
+    return any(role.id in exempt for role in member.roles)
 
-    Staff are exempt because an over-broad pattern would otherwise ban the very
-    people who need to fix it — a `/name-filter cleanse` with a loose regex
-    could remove every moderator before anyone could intervene.
+
+def _is_privileged(bot, guild: discord.Guild, member_id: int) -> bool:
+    """
+    True for accounts the filter must not act against automatically.
+
+    Unlike _is_role_exempt this only downgrades the action to 'flag' - the
+    match is still logged. A moderator account that suddenly renames itself
+    to "MetaMask Support" is what a compromise looks like, so it must stay
+    visible even though the bot won't ban its way out of the problem.
     """
     if member_id == bot.master_user:
         return True
@@ -285,10 +236,17 @@ async def _take_action(
     matched_name: str,
     trigger: str,
 ):
-    """
-    Apply the configured action to the member and send a richly detailed
-    log entry explaining exactly what happened and why.
-    """
+
+    # Belt and braces: callers filter these out before matching, but a missed
+    # call site here would ban a staff member, so re-check at the sharp end.
+    if _is_role_exempt(bot, guild, member):
+        return
+
+    protected = _is_privileged(bot, guild, member.id)
+    downgraded = protected and action != 'flag'
+    if downgraded:
+        action = 'flag'
+
     filter_type_label = "Phrase (exact substring)" if matched_filter['type'] == 'phrase' else "Regex (pattern match)"
 
     # Build the audit-log reason string (appears in Discord's audit log)
@@ -304,10 +262,10 @@ async def _take_action(
 
     try:
         if action == 'flag':
-            # Report only. A pattern match is evidence, not proof — a human
-            # decides. Mirrors the link filter, where the bot removes the
-            # content and a moderator judges the person.
-            action_taken_label = "None — flagged for moderator review"
+            if downgraded:
+                action_taken_label = "None — privileged account, reported instead"
+            else:
+                action_taken_label = "None — flagged for moderator review"
             action_level = 'warning'
             log_title = "Name Filter — Flagged for Review"
         elif action == 'kick':
@@ -336,56 +294,58 @@ async def _take_action(
         action_level = 'error'
         log_title = "Name Filter — Action Failed"
 
-    # -----------------------------------------------------------------------
-    # Send a descriptive log embed so moderators understand exactly what
-    # happened, which rule matched, and what (if anything) they need to do.
-    # -----------------------------------------------------------------------
-    if action == 'flag':
-        why = (
-            f"**No action was taken — this is a report.**\n"
-            f"{member.mention} matched a name pattern your team configured to catch "
-            f"impersonators and fake support accounts. Review the account and decide: "
-            f"ban if it is a scammer, or remove the pattern with "
-            f"`/name-filter remove` if this was a false positive."
-        )
-    else:
-        why = (
-            "This member's name matched a pattern your moderation team "
-            "configured to block impersonators, fake support/staff accounts, "
-            "scam bots, or other deceptive usernames. The filter triggered "
-            f"automatically because `{matched_name}` satisfied the rule."
-        )
-
-    # During a raid, collapse per-match embeds into periodic summaries so the
-    # log channel does not become the bottleneck (see _BurstTracker).
     tracker = _burst(guild.id)
     if tracker.record():
         tracker.buffer.append((matched_name, matched_filter['pattern'], action_taken_label))
         await _flush_burst(bot, guild)
         return
 
-    await logger.log_action(
-        bot,
-        guild,
-        log_title,
-        member,
-        details={
-            "Member":          f"{member.mention} — `{member}` (`{member.id}`)",
-            "Matched Name":    f"`{matched_name}`",
-            "Name Type":       trigger,
-            "Blocked Pattern": f"`{matched_filter['pattern']}`  (ID: {matched_filter['id']})",
-            "Filter Type":     filter_type_label,
-            "Action Taken":    action_taken_label,
-            "Account Age":     _account_age_str(member),
-            "Why":             why,
-        },
-        level=action_level,
+    await _send_match_embed(
+        bot, guild, member, log_title, action_level,
+        matched_name=matched_name,
+        trigger=trigger,
+        matched_filter=matched_filter,
+        filter_type_label=filter_type_label,
+        failure=action_taken_label if action_level == 'error' else None,
     )
 
 
-# ---------------------------------------------------------------------------
+async def _send_match_embed(bot, guild, member, title, level, *, matched_name,
+                            trigger, matched_filter, filter_type_label,
+                            failure=None):
+
+    log_ch = logger.get_log_channel(bot, guild)
+    if not log_ch:
+        return
+
+    now = discord.utils.utcnow()
+    embed = discord.Embed(
+        title=title,
+        color=logger._COLORS.get(level, logger._COLORS['info']),
+        timestamp=now,
+    )
+    embed.set_author(
+        name=str(member),
+        icon_url=member.display_avatar.url if member.display_avatar else None,
+    )
+    embed.add_field(name="Member", value=f"{member.mention}\n`{member.id}`", inline=True)
+    embed.add_field(name="Matched", value=f"`{matched_name}`", inline=True)
+    embed.add_field(name="Account age", value=_account_age_str(member), inline=True)
+    embed.add_field(name="Detected on", value=trigger, inline=True)
+    embed.add_field(
+        name="Rule",
+        value=f"`{matched_filter['pattern']}`\n{filter_type_label} · ID {matched_filter['id']}",
+        inline=True,
+    )
+    embed.add_field(name="When", value=logger.fmt_timestamp(now), inline=True)
+    if failure:
+        embed.add_field(name="Failure", value=failure, inline=False)
+    embed.set_footer(text=guild.name)
+
+    await logger.safe_send(log_ch, embed=embed)
+
+
 # Bulk import modal
-# ---------------------------------------------------------------------------
 
 class BulkImportModal(discord.ui.Modal):
     def __init__(self, bot, guild_id: int, guild: discord.Guild, actor, filter_type: str):
@@ -423,8 +383,6 @@ class BulkImportModal(discord.ui.Modal):
         bad_patterns    = []
 
         for pattern in patterns:
-            # Validate regex before inserting — rejects unsafe patterns as well
-            # as syntactically invalid ones.
             if self.filter_type == 'regex':
                 ok_pattern, why = validate_regex(pattern)
                 if not ok_pattern:
@@ -468,9 +426,7 @@ class BulkImportModal(discord.ui.Modal):
             )
 
 
-# ---------------------------------------------------------------------------
 # Cog
-# ---------------------------------------------------------------------------
 
 class NameFilter(commands.Cog):
     def __init__(self, bot):
@@ -480,20 +436,11 @@ class NameFilter(commands.Cog):
     def cog_unload(self):
         self.flush_bursts.cancel()
 
-    # ------------------------------------------------------------------
     # Background task: emit pending burst summaries
-    # ------------------------------------------------------------------
 
     @tasks.loop(seconds=BURST_FLUSH_INTERVAL)
     async def flush_bursts(self):
-        """
-        Flush buffered matches even after a raid stops.
 
-        Aggregation is triggered by incoming matches, so without this the final
-        few entries of a burst would sit in the buffer indefinitely once the
-        joins dried up — the tail of an attack is exactly the part you want in
-        the log.
-        """
         for guild_id, tracker in list(_bursts.items()):
             guild = self.bot.get_guild(guild_id)
             if guild is None:
@@ -515,10 +462,154 @@ class NameFilter(commands.Cog):
     nf        = discord.SlashCommandGroup("name-filter",  "Manage name-based security filters")
     nf_add    = nf.create_subgroup("add",    "Add a single filter")
     nf_import = nf.create_subgroup("import", "Bulk import filters via modal")
+    nf_exempt = nf.create_subgroup("exempt", "Roles the name filter ignores entirely")
 
-    # ------------------------------------------------------------------
+    # /name-filter exempt add
+
+    @nf_exempt.command(
+        name="add",
+        description="[Owner] Exempt a role from every name filter check. Requires 2FA.",
+    )
+    @commands.cooldown(1, 5, commands.BucketType.user)
+    async def exempt_add(
+        self,
+        ctx: discord.ApplicationContext,
+        role: Option(discord.Role, "Role to exempt (staff, team, partners…)", required=True),
+        code: Option(int, "Your 6-digit 2FA code", required=True),
+    ):
+        # Owner-gated: an exemption is a hole in the filter. Announcers can
+        # maintain patterns, but deciding who the filter cannot see is the
+        # same class of decision as set-action.
+        allowed, err = permissions.check(self.bot, ctx, 'owner')
+        if not allowed:
+            await ctx.respond(err, ephemeral=True)
+            return
+        ok2, err2 = permissions.guild_required(self.bot, ctx)
+        if not ok2:
+            await ctx.respond(err2, ephemeral=True)
+            return
+
+        if not two_factor_helper.verify_code(self.bot.CONN, ctx.author.id, code):
+            await ctx.respond("Incorrect 2FA code.", ephemeral=True)
+            return
+
+        # Exempting @everyone would silently disable the whole feature while
+        # leaving it looking configured. Refuse rather than let that happen.
+        if role.id == ctx.guild.id:
+            await ctx.respond(
+                "You cannot exempt `@everyone` — every member holds it, so that would "
+                "turn the name filter off entirely while still appearing active.\n"
+                "Use `/name-filter set-action flag` if you want to pause enforcement.",
+                ephemeral=True,
+            )
+            return
+
+        ok = db_handler.add_name_filter_exempt_role(
+            self.bot.CONN, ctx.guild.id, role.id, ctx.author.id
+        )
+        if not ok:
+            await ctx.respond(f"{role.mention} is already exempt.", ephemeral=True)
+            return
+
+        await ctx.respond(
+            f"{role.mention} is now exempt from the name filter.\n"
+            f"Members holding it are skipped on join, on nickname change, on username "
+            f"change, and during `/name-filter cleanse` — no action, no log entry.",
+            ephemeral=True,
+        )
+        await logger.log_action(
+            self.bot, ctx.guild, "Name Filter Exemption Added", ctx.author,
+            details={"Role": f"{role.mention} (`{role.id}`)",
+                     "Members Affected": str(len(role.members))},
+            level='warning',
+        )
+
+    # /name-filter exempt remove
+
+    @nf_exempt.command(
+        name="remove",
+        description="[Owner] Remove a role's exemption so its members are scanned again. Requires 2FA.",
+    )
+    @commands.cooldown(1, 5, commands.BucketType.user)
+    async def exempt_remove(
+        self,
+        ctx: discord.ApplicationContext,
+        role: Option(discord.Role, "Role to start scanning again", required=True),
+        code: Option(int, "Your 6-digit 2FA code", required=True),
+    ):
+        allowed, err = permissions.check(self.bot, ctx, 'owner')
+        if not allowed:
+            await ctx.respond(err, ephemeral=True)
+            return
+        ok2, err2 = permissions.guild_required(self.bot, ctx)
+        if not ok2:
+            await ctx.respond(err2, ephemeral=True)
+            return
+
+        if not two_factor_helper.verify_code(self.bot.CONN, ctx.author.id, code):
+            await ctx.respond("Incorrect 2FA code.", ephemeral=True)
+            return
+
+        removed = db_handler.remove_name_filter_exempt_role(
+            self.bot.CONN, ctx.guild.id, role.id
+        )
+        if not removed:
+            await ctx.respond(f"{role.mention} was not exempt.", ephemeral=True)
+            return
+
+        await ctx.respond(
+            f"{role.mention} is no longer exempt — its members are scanned again.",
+            ephemeral=True,
+        )
+        await logger.log_action(
+            self.bot, ctx.guild, "Name Filter Exemption Removed", ctx.author,
+            details={"Role": f"{role.mention} (`{role.id}`)"},
+            level='warning',
+        )
+
+    # /name-filter exempt list
+
+    @nf_exempt.command(
+        name="list",
+        description="Show which roles the name filter currently ignores.",
+    )
+    async def exempt_list(self, ctx: discord.ApplicationContext):
+        allowed, err = permissions.check(self.bot, ctx, 'announcer')
+        if not allowed:
+            await ctx.respond(err, ephemeral=True)
+            return
+        ok2, err2 = permissions.guild_required(self.bot, ctx)
+        if not ok2:
+            await ctx.respond(err2, ephemeral=True)
+            return
+
+        role_ids = db_handler.get_name_filter_exempt_roles(self.bot.CONN, ctx.guild.id)
+        if not role_ids:
+            await ctx.respond(
+                "No roles are exempt — every member is checked against the filters.\n"
+                "Add one with `/name-filter exempt add`.\n\n"
+                "Note: server owners, moderators, announcers and link managers are "
+                "never auto-banned regardless. Their matches are logged for review "
+                "instead, since a staff rename can mean a compromised account.",
+                ephemeral=True,
+            )
+            return
+
+        lines = []
+        for rid in role_ids:
+            role = ctx.guild.get_role(rid)
+            if role:
+                lines.append(f"• {role.mention} — {len(role.members)} member(s)")
+            else:
+                lines.append(f"• `{rid}` — *deleted role, safe to remove*")
+
+        await ctx.respond(
+            f"**Name filter exempt roles ({len(lines)})**\n" + "\n".join(lines) +
+            "\n\nMembers holding these are skipped entirely — no action, no log entry.",
+            ephemeral=True,
+        )
+
     # /name-filter add phrase
-    # ------------------------------------------------------------------
 
     @nf_add.command(
         name="phrase",
@@ -555,9 +646,7 @@ class NameFilter(commands.Cog):
             level='info',
         )
 
-    # ------------------------------------------------------------------
     # /name-filter add regex
-    # ------------------------------------------------------------------
 
     @nf_add.command(
         name="regex",
@@ -599,9 +688,7 @@ class NameFilter(commands.Cog):
             level='info',
         )
 
-    # ------------------------------------------------------------------
     # /name-filter import phrase
-    # ------------------------------------------------------------------
 
     @nf_import.command(
         name="phrase",
@@ -627,9 +714,7 @@ class NameFilter(commands.Cog):
             BulkImportModal(self.bot, ctx.guild.id, ctx.guild, ctx.author, 'phrase')
         )
 
-    # ------------------------------------------------------------------
     # /name-filter import regex
-    # ------------------------------------------------------------------
 
     @nf_import.command(
         name="regex",
@@ -655,9 +740,7 @@ class NameFilter(commands.Cog):
             BulkImportModal(self.bot, ctx.guild.id, ctx.guild, ctx.author, 'regex')
         )
 
-    # ------------------------------------------------------------------
     # /name-filter remove
-    # ------------------------------------------------------------------
 
     @nf.command(
         name="remove",
@@ -708,9 +791,7 @@ class NameFilter(commands.Cog):
             level='warning',
         )
 
-    # ------------------------------------------------------------------
     # /name-filter list
-    # ------------------------------------------------------------------
 
     @nf.command(
         name="list",
@@ -795,9 +876,7 @@ class NameFilter(commands.Cog):
             ephemeral=True,
         )
 
-    # ------------------------------------------------------------------
     # /name-filter test
-    # ------------------------------------------------------------------
 
     @nf.command(
         name="test",
@@ -837,9 +916,7 @@ class NameFilter(commands.Cog):
                 ephemeral=True,
             )
 
-    # ------------------------------------------------------------------
     # /name-filter set-action
-    # ------------------------------------------------------------------
 
     @nf.command(
         name="set-action",
@@ -903,9 +980,7 @@ class NameFilter(commands.Cog):
             level='info',
         )
 
-    # ------------------------------------------------------------------
     # /name-filter cleanse
-    # ------------------------------------------------------------------
 
     @nf.command(
         name="cleanse",
@@ -946,18 +1021,20 @@ class NameFilter(commands.Cog):
         action   = db_handler.get_name_filter_action(self.bot.CONN, ctx.guild.id)
         actioned = 0
         failed   = 0
-        skipped  = 0
 
-        # ------------------------------------------------------------------
-        # Phase 1 — work out who matches, without touching anyone yet.
-        # ------------------------------------------------------------------
+        # Phase 1 - work out who matches, without touching anyone yet.
         matches = []
+        exempted = 0
+        eligible = 0
         for member in list(ctx.guild.members):
             if member.bot:
                 continue
-            if _is_exempt(self.bot, ctx.guild, member.id):
-                skipped += 1
+            # Exempt roles never enter the scan at all, so they are neither
+            # actioned nor counted against the safety threshold below.
+            if _is_role_exempt(self.bot, ctx.guild, member):
+                exempted += 1
                 continue
+            eligible += 1
 
             # Check username first, then nickname
             matched_filter, matched_name = _match(filters, member.name)
@@ -970,18 +1047,16 @@ class NameFilter(commands.Cog):
             if matched_filter:
                 matches.append((member, matched_filter, matched_name, trigger))
 
-        # ------------------------------------------------------------------
-        # Phase 2 — refuse to run if the blast radius looks like a mistake.
+        # Phase 2 - refuse to run if the blast radius looks like a mistake.
         #
         # An over-broad pattern (a stray `.*`, an unescaped `.`) would other-
         # wise ban most of the server before anyone could react, and bans
         # cannot be undone in bulk. Bail out and make the operator narrow the
         # filter instead.
-        # ------------------------------------------------------------------
-        eligible = max(1, len([m for m in ctx.guild.members if not m.bot]) - skipped)
+        eligible = max(1, eligible)
         share = len(matches) / eligible
         # 'flag' only writes log entries, so a wide match is noisy rather than
-        # destructive — the guard exists to stop irreversible mass actions.
+        # destructive - the guard exists to stop irreversible mass actions.
         if action != 'flag' and len(matches) > CLEANSE_ABORT_MIN and share > CLEANSE_ABORT_SHARE:
             preview = "\n".join(
                 f"  • `{m.name}` — matched `{f['pattern']}` (filter #{f['id']})"
@@ -1000,9 +1075,7 @@ class NameFilter(commands.Cog):
             )
             return
 
-        # ------------------------------------------------------------------
-        # Phase 3 — apply.
-        # ------------------------------------------------------------------
+        # Phase 3 - apply.
         for member, matched_filter, matched_name, trigger in matches:
             try:
                 await _take_action(
@@ -1018,19 +1091,17 @@ class NameFilter(commands.Cog):
         action_label = _action_label(action)
         verb = "flagged for review" if action == 'flag' else f"actioned ({action_label})"
 
+        exempt_note = f" • **{exempted}** skipped (exempt role)" if exempted else ""
         await ctx.followup.send(
             f"**Cleanse complete.**\n"
             f"**{actioned}** member(s) {verb} • "
-            f"**{skipped}** exempt • "
-            f"**{failed}** failed\n"
+            f"**{failed}** failed{exempt_note}\n"
             f"Filters checked: **{len(filters)}** • "
             f"Full details logged to your log channel.",
             ephemeral=True,
         )
 
-    # ------------------------------------------------------------------
     # Event: member joins
-    # ------------------------------------------------------------------
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
@@ -1039,11 +1110,10 @@ class NameFilter(commands.Cog):
         guild = member.guild
         if not db_handler.check_guild(self.bot.CONN, guild.id):
             return
-        if _is_exempt(self.bot, guild, member.id):
-            return
-
         filters = db_handler.get_name_filters(self.bot.CONN, guild.id)
         if not filters:
+            return
+        if _is_role_exempt(self.bot, guild, member):
             return
 
         # Check username
@@ -1059,9 +1129,7 @@ class NameFilter(commands.Cog):
             action = db_handler.get_name_filter_action(self.bot.CONN, guild.id)
             await _take_action(self.bot, guild, member, action, matched_filter, matched_name, trigger)
 
-    # ------------------------------------------------------------------
     # Event: nickname change within the server
-    # ------------------------------------------------------------------
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
@@ -1070,18 +1138,17 @@ class NameFilter(commands.Cog):
         # Only care about nickname changes
         if before.nick == after.nick:
             return
-        # Nickname was removed — not a threat
+        # Nickname was removed - not a threat
         if not after.nick:
             return
 
         guild = after.guild
         if not db_handler.check_guild(self.bot.CONN, guild.id):
             return
-        if _is_exempt(self.bot, guild, after.id):
-            return
-
         filters = db_handler.get_name_filters(self.bot.CONN, guild.id)
         if not filters:
+            return
+        if _is_role_exempt(self.bot, guild, after):
             return
 
         matched_filter, matched_name = _match(filters, after.nick)
@@ -1092,9 +1159,7 @@ class NameFilter(commands.Cog):
                 matched_filter, matched_name, "Changed their server nickname",
             )
 
-    # ------------------------------------------------------------------
     # Event: global username change
-    # ------------------------------------------------------------------
 
     @commands.Cog.listener()
     async def on_user_update(self, before: discord.User, after: discord.User):
@@ -1109,11 +1174,11 @@ class NameFilter(commands.Cog):
             member = guild.get_member(after.id)
             if not member or member.bot:
                 continue
-            if _is_exempt(self.bot, guild, member.id):
-                continue
 
             filters = db_handler.get_name_filters(self.bot.CONN, guild.id)
             if not filters:
+                continue
+            if _is_role_exempt(self.bot, guild, member):
                 continue
 
             matched_filter, matched_name = _match(filters, after.name)

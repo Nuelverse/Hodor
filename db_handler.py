@@ -2,20 +2,6 @@ import sqlite3
 import time
 from sqlite3 import Error
 
-
-# ---------------------------------------------------------------------------
-# Read cache
-#
-# on_message previously issued up to ~8 synchronous SQLite queries per message
-# (guild check, filter flag, four exemption lookups, whitelist fetch). sqlite3
-# blocks the event loop, so on a busy guild that stalls every other listener.
-#
-# These are read-mostly config values, so they are cached briefly and evicted
-# explicitly whenever the guild's config is written. Keys include the
-# connection identity so separate databases (e.g. per-test in-memory ones)
-# never share entries.
-# ---------------------------------------------------------------------------
-
 _CACHE: dict = {}
 _CACHE_TTL = 10.0
 _MISS = object()
@@ -52,9 +38,7 @@ def clear_cache():
     _CACHE.clear()
 
 
-# ---------------------------------------------------------------------------
 # Connection
-# ---------------------------------------------------------------------------
 
 def create_connection(db_file: str):
     try:
@@ -76,16 +60,7 @@ def _exec(conn, sql: str, params=()):
     conn.commit()
     return cur
 
-
-# The full schema, as a module-level constant so tests build their in-memory
-# database from THIS list rather than a hand-copied duplicate. The copy in
-# tests/conftest.py silently drifted out of date every time a table was added,
-# producing failures that looked like product bugs but were fixture rot.
 SCHEMA = [
-        # 2FA users
-        # last_totp_step: the TOTP time-step most recently consumed by a
-        # successful verification. Codes from that step or earlier are refused,
-        # which stops an observed code being replayed within its 30s window.
         """CREATE TABLE IF NOT EXISTS users (
             user_id        INTEGER PRIMARY KEY,
             secret         TEXT    NOT NULL,
@@ -154,13 +129,7 @@ SCHEMA = [
             role_id  INTEGER NOT NULL,
             UNIQUE (guild_id, role_id)
         )""",
-
-        # NOTE: the backup_codes table was removed deliberately. Single-use
-        # recovery codes were a second credential that users saved insecurely,
-        # letting a phished Discord account be escalated into a full bot
-        # takeover with no human in the loop. Recovery is now /reset-user by an
-        # owner. _run_migrations drops the table on existing installs.
-
+        
         # Link managers (can manage link whitelist, cannot toggle filter)
         """CREATE TABLE IF NOT EXISTS link_managers (
             id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -254,6 +223,20 @@ SCHEMA = [
             UNIQUE (guild_id, type, pattern),
             FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
         )""",
+
+        # Roles the name filter never acts on (staff, team, partners).
+        # Holding one of these skips the scan outright - see _exempt_reason
+        # in cogs/name_filter.py for why this is a full skip rather than a
+        # downgrade to 'flag'.
+        """CREATE TABLE IF NOT EXISTS name_filter_exempt_roles (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id   INTEGER NOT NULL,
+            role_id    INTEGER NOT NULL,
+            added_by   INTEGER,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (guild_id, role_id),
+            FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
+        )""",
 ]
 
 
@@ -275,10 +258,6 @@ def startup_db():
     if conn is None:
         return None
 
-    # Say plainly where the data is actually going. On container hosts a volume
-    # can be mounted correctly while DATABASE_PATH still points at ephemeral
-    # disk — the setup looks healthy and silently resets on every deploy. The
-    # absolute path in the logs makes that visible in one glance.
     resolved = os.path.abspath(db_path)
     existed = os.path.getsize(resolved) > 0 if os.path.exists(resolved) else False
     print(f"[DB] Using database: {resolved}")
@@ -306,7 +285,7 @@ def _run_migrations(conn):
         "ALTER TABLE guilds ADD COLUMN announce_timeout INTEGER NOT NULL DEFAULT 300",
         # Add name_filter_action column to guilds (default: ban)
         "ALTER TABLE guilds ADD COLUMN name_filter_action TEXT DEFAULT 'ban'",
-        # TOTP replay protection — records the last consumed 30s time-step
+        # TOTP replay protection - records the last consumed 30s time-step
         "ALTER TABLE users ADD COLUMN last_totp_step INTEGER",
         # Announcement grants must survive a restart so they can still be revoked
         "ALTER TABLE active_announcements ADD COLUMN guild_id INTEGER",
@@ -322,36 +301,17 @@ def _run_migrations(conn):
         except sqlite3.OperationalError:
             pass  # Column already exists, skip
 
-    # Drop the retired backup_codes table.
-    #
-    # Left in place these rows are stale credential material: if the feature
-    # were ever re-enabled, codes issued years earlier — and long since
-    # screenshotted into someone's notes app — would start working again.
-    # Dead credentials should not linger in the database.
     try:
         conn.execute("DROP TABLE IF EXISTS backup_codes")
         conn.commit()
     except Exception as e:
         print(f"[DB] Could not drop retired backup_codes table: {e}")
-
-    # Correct stale announce_timeout value: the old default was 120s; bump to 300s
-    # for any guild that still has the old default and hasn't manually changed it.
     try:
         conn.execute("UPDATE guilds SET announce_timeout = 300 WHERE announce_timeout = 120")
         conn.commit()
     except Exception as e:
         print(f"[DB] announce_timeout default correction skipped: {e}")
 
-    # Remove the erroneous FK on trusted_members.member_id → users.user_id.
-    # Members must be addable before they have run /create-2fa.
-    # SQLite can't DROP CONSTRAINT, so we recreate the table without it.
-    #
-    # GUARDED: this used to run on EVERY startup, copying and re-creating the
-    # table each boot even when the bad constraint was long gone. That is
-    # pointless work and a standing risk — the script drops the live table
-    # before renaming the copy into place, so a crash or container kill at the
-    # wrong moment would take the announcer list with it. Now we look first and
-    # only rebuild when the offending foreign key is actually present.
     if not _trusted_members_needs_rebuild(conn):
         return
 
@@ -387,21 +347,17 @@ def _trusted_members_needs_rebuild(conn) -> bool:
     """
     True only if trusted_members still carries the bad FK to users.user_id.
 
-    Checked with PRAGMA foreign_key_list rather than assumed, so the expensive
-    and slightly dangerous table rebuild happens once in the lifetime of a
-    database instead of on every boot.
+    Checked with PRAGMA rather than assumed, so the expensive rebuild runs
+    once per database instead of every boot.
     """
     try:
         fks = conn.execute("PRAGMA foreign_key_list(trusted_members)").fetchall()
     except sqlite3.OperationalError:
-        return False  # Table doesn't exist yet — create_schema builds it correctly.
-    # Row layout: (id, seq, table, from, to, on_update, on_delete, match)
+        return False
     return any(str(row[2]).lower() == "users" for row in fks)
 
 
-# ---------------------------------------------------------------------------
 # Users (2FA)
-# ---------------------------------------------------------------------------
 
 def insert_user(conn, info):
     """info: (user_id, secret, verified)"""
@@ -409,12 +365,6 @@ def insert_user(conn, info):
 
 
 def get_last_totp_step(conn, user_id: int):
-    """
-    Return the last TOTP time-step this user successfully consumed, or None.
-
-    Tolerates the column being absent so a database that has not been migrated
-    yet degrades to 'no replay protection' rather than breaking every command.
-    """
     try:
         cur = conn.execute("SELECT last_totp_step FROM users WHERE user_id=?", (user_id,))
     except sqlite3.OperationalError:
@@ -428,7 +378,7 @@ def set_last_totp_step(conn, user_id: int, step: int):
     try:
         _exec(conn, "UPDATE users SET last_totp_step=? WHERE user_id=?", (step, user_id))
     except sqlite3.OperationalError:
-        pass  # Column missing on an unmigrated DB — nothing to record.
+        pass  # Column missing on an unmigrated DB - nothing to record.
 
 
 def check_user(conn, user_id: int) -> bool:
@@ -456,9 +406,7 @@ def delete_user(conn, user_id: int):
     _exec(conn, "DELETE FROM users WHERE user_id=?", (user_id,))
 
 
-# ---------------------------------------------------------------------------
 # Guilds
-# ---------------------------------------------------------------------------
 
 def check_guild(conn, guild_id: int) -> bool:
     key = _ckey(conn, "check_guild", guild_id)
@@ -473,11 +421,9 @@ def init_guild(conn, guild_id: int, log_channel: int, announcement_channel: int 
     """
     Initialize a guild with minimal required fields.
 
-    Webhook protection ON by default. Name filter starts in 'flag' mode —
-    matches are logged for a moderator to judge rather than acted on
-    automatically, because a fresh server has untested patterns and an
-    auto-ban on a false positive cannot be undone in bulk. Raise it with
-    /name-filter set-action once the patterns are proven.
+    Webhook protection on. Name filter starts in 'flag' mode: a fresh server
+    has untested patterns and a bulk auto-ban can't be undone. Raise it with
+    /name-filter set-action once they're proven.
     """
     _exec(conn,
         """INSERT INTO guilds(guild_id, log_channel, announcement_channel,
@@ -509,6 +455,7 @@ def delete_guild(conn, guild_id: int):
     _exec(conn, "DELETE FROM link_filter_whitelist WHERE guild_id=?", (guild_id,))
     _exec(conn, "DELETE FROM webhook_temp_disable WHERE guild_id=?", (guild_id,))
     _exec(conn, "DELETE FROM name_filters WHERE guild_id=?", (guild_id,))
+    _exec(conn, "DELETE FROM name_filter_exempt_roles WHERE guild_id=?", (guild_id,))
     _exec(conn, "DELETE FROM verification_config WHERE guild_id=?", (guild_id,))
     _exec(conn, "DELETE FROM guild_branding WHERE guild_id=?", (guild_id,))
     _exec(conn, "DELETE FROM guilds WHERE guild_id=?", (guild_id,))
@@ -576,9 +523,7 @@ def set_announce_timeout(conn, guild_id: int, seconds: int):
     invalidate_guild(conn, guild_id)
 
 
-# ---------------------------------------------------------------------------
 # Webhook settings
-# ---------------------------------------------------------------------------
 
 def check_webhook(conn, guild_id: int) -> bool:
     cur = conn.execute("SELECT webhook_protection FROM guilds WHERE guild_id=?", (guild_id,))
@@ -600,9 +545,7 @@ def set_webhook_parameters(conn, info):
     invalidate_guild(conn, info[2])
 
 
-# ---------------------------------------------------------------------------
 # Webhook temporary disable
-# ---------------------------------------------------------------------------
 
 def set_webhook_temp_disable(conn, guild_id: int, disabled_by: int, expires_iso: str):
     _exec(conn,
@@ -624,9 +567,7 @@ def clear_webhook_temp_disable(conn, guild_id: int):
     _exec(conn, "DELETE FROM webhook_temp_disable WHERE guild_id=?", (guild_id,))
 
 
-# ---------------------------------------------------------------------------
 # Trusted members (Announcers)
-# ---------------------------------------------------------------------------
 
 def authorise_member(conn, info):
     """info: (guild_id, member_id)"""
@@ -651,9 +592,7 @@ def get_trusted_members(conn, guild_id: int) -> list:
     return [row[0] for row in cur.fetchall()]
 
 
-# ---------------------------------------------------------------------------
 # Announcement channels
-# ---------------------------------------------------------------------------
 
 def insert_channel(conn, info):
     """info: (channel_id, guild_id)"""
@@ -675,23 +614,20 @@ def get_announcement_channel(conn, guild_id: int):
     return row[0] if row else None
 
 
-# ---------------------------------------------------------------------------
 # Active announcements (permission grant tracking)
-# ---------------------------------------------------------------------------
 
 def insert_active_announcement(conn, info):
-    """info: (channel_id, member_id) — inserts or refreshes the session timestamp."""
+    """info: (channel_id, member_id) - inserts or refreshes the session timestamp."""
     _exec(conn, "INSERT OR REPLACE INTO active_announcements(channel_id, member_id) VALUES (?,?)", info)
 
 
 def record_announcement_grant(conn, guild_id: int, channel_id: int, member_id: int, expires_at: int):
     """
-    Persist a temporary announcement permission grant.
+    Persist a temporary announcement grant.
 
-    The in-memory revocation task dies with the process, so without this a
-    restart during an active window left the member holding send_messages and
-    mention_everyone permanently. Reconciled on startup by
-    get_pending_announcement_grants().
+    The in-memory revocation task dies with the process, so a restart mid-window
+    used to leave the member holding send_messages permanently. Reconciled on
+    startup by get_pending_announcement_grants().
     """
     _exec(conn,
         """INSERT OR REPLACE INTO active_announcements(channel_id, member_id, guild_id, expires_at)
@@ -701,10 +637,10 @@ def record_announcement_grant(conn, guild_id: int, channel_id: int, member_id: i
 
 def get_pending_announcement_grants(conn) -> list:
     """
-    Return every persisted grant as (guild_id, channel_id, member_id, expires_at).
+    Every persisted grant as (guild_id, channel_id, member_id, expires_at).
 
-    Rows written before this column existed have expires_at NULL; they are
-    returned with 0 so startup treats them as already expired and revokes them.
+    Rows predating the column have expires_at NULL and are returned as 0, so
+    startup treats them as expired and revokes them.
     """
     try:
         cur = conn.execute(
@@ -730,9 +666,7 @@ def remove_inactive_announcements(conn):
         "DELETE FROM active_announcements WHERE timestamp <= datetime('now', '-10 minutes')")
 
 
-# ---------------------------------------------------------------------------
 # Link whitelist
-# ---------------------------------------------------------------------------
 
 def add_link_whitelist(conn, guild_id: int, link_type: str, url: str, added_by: int) -> bool:
     try:
@@ -764,9 +698,7 @@ def get_link_whitelist(conn, guild_id: int) -> list:
     return _cache_put(key, cur.fetchall())
 
 
-# ---------------------------------------------------------------------------
 # Link filter entity whitelist (channels, roles, users, categories)
-# ---------------------------------------------------------------------------
 
 def add_filter_exempt(conn, guild_id: int, entity_type: str, entity_id: int, added_by: int) -> bool:
     """Exempt a channel/role/user/category from the link filter."""
@@ -801,7 +733,7 @@ def get_filter_exemptions(conn, guild_id: int) -> list:
 
 
 def is_filter_exempt(conn, guild_id: int, entity_type: str, entity_id: int) -> bool:
-    """Resolved from the cached exemption list — no query on the hot path."""
+    """Resolved from the cached exemption list - no query on the hot path."""
     return (entity_type, entity_id) in get_filter_exemptions(conn, guild_id)
 
 
@@ -815,9 +747,7 @@ def is_filter_exempt_by_roles(conn, guild_id: int, role_ids: list) -> bool:
     return any(rid in exempt_roles for rid in role_ids)
 
 
-# ---------------------------------------------------------------------------
 # Safe roles
-# ---------------------------------------------------------------------------
 
 def add_safe_role(conn, guild_id: int, role_id: int) -> bool:
     try:
@@ -844,9 +774,7 @@ def get_safe_roles(conn, guild_id: int) -> list:
     return [row[0] for row in cur.fetchall()]
 
 
-# ---------------------------------------------------------------------------
 # Link managers
-# ---------------------------------------------------------------------------
 
 def add_link_manager(conn, guild_id: int, member_id: int) -> bool:
     try:
@@ -877,9 +805,7 @@ def get_link_managers(conn, guild_id: int) -> list:
     return [row[0] for row in cur.fetchall()]
 
 
-# ---------------------------------------------------------------------------
 # Panic backups
-# ---------------------------------------------------------------------------
 
 def save_panic_role_backup(conn, guild_id: int, role_id: int, perms_value: int):
     _exec(conn,
@@ -911,9 +837,7 @@ def clear_panic_backups(conn, guild_id: int):
     _exec(conn, "DELETE FROM panic_channel_backup WHERE guild_id=?", (guild_id,))
 
 
-# ---------------------------------------------------------------------------
 # Embeds
-# ---------------------------------------------------------------------------
 
 def insert_embed(conn, guild_id: int, channel_id: int, message_id: int, author_id: int,
                  title, description, color: int, footer, image_url):
@@ -950,9 +874,7 @@ def delete_embed(conn, message_id: int):
     _exec(conn, "DELETE FROM embeds WHERE message_id=?", (message_id,))
 
 
-# ---------------------------------------------------------------------------
 # Name filters
-# ---------------------------------------------------------------------------
 
 def insert_name_filter(conn, guild_id: int, filter_type: str, pattern: str, added_by: int) -> bool:
     """Insert a name filter. Returns False if it already exists."""
@@ -1006,20 +928,49 @@ def set_name_filter_action(conn, guild_id: int, action: str):
     invalidate_guild(conn, guild_id)
 
 
-# ---------------------------------------------------------------------------
+# Name filter exempt roles
+
+def add_name_filter_exempt_role(conn, guild_id: int, role_id: int, added_by: int) -> bool:
+    """Exempt a role from the name filter. Returns False if already exempt."""
+    try:
+        _exec(conn,
+            "INSERT INTO name_filter_exempt_roles(guild_id, role_id, added_by) VALUES (?,?,?)",
+            (guild_id, role_id, added_by))
+        invalidate_guild(conn, guild_id)
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def remove_name_filter_exempt_role(conn, guild_id: int, role_id: int) -> bool:
+    """Drop a role exemption. Returns False if it was not exempt."""
+    cur = _exec(conn,
+        "DELETE FROM name_filter_exempt_roles WHERE guild_id=? AND role_id=?",
+        (guild_id, role_id))
+    invalidate_guild(conn, guild_id)
+    return cur.rowcount > 0
+
+
+def get_name_filter_exempt_roles(conn, guild_id: int) -> set:
+    """
+    Role IDs the name filter must ignore, as a set.
+
+    Cached: this is read on every join and every name change, so an
+    uncached query here would put a round-trip in the raid hot path.
+    """
+    key = _ckey(conn, "name_filter_exempt_roles", guild_id)
+    cached = _cache_get(key)
+    if cached is not _MISS:
+        return cached
+    cur = conn.execute(
+        "SELECT role_id FROM name_filter_exempt_roles WHERE guild_id=?", (guild_id,))
+    return _cache_put(key, {row[0] for row in cur.fetchall()})
+
+
 # Member verification
-# ---------------------------------------------------------------------------
 
 def set_verification_config(conn, guild_id: int, channel_id: int, role_id: int,
                             min_account_age: int = 0, log_channel_id: int = None):
-    """
-    Create or update a guild's verification setup.
-
-    Upsert rather than insert so re-running /verify-setup reconfigures instead
-    of failing on the primary key. log_channel_id of None keeps whatever was
-    already configured, so re-running setup without naming a join channel does
-    not silently reset it.
-    """
     _exec(conn,
         """INSERT INTO verification_config(guild_id, channel_id, role_id,
                                            min_account_age, log_channel_id, enabled)
@@ -1084,7 +1035,7 @@ def delete_verification_config(conn, guild_id: int) -> bool:
 
 
 def get_all_verification_configs(conn) -> list:
-    """Every configured guild — used to re-register persistent views on startup."""
+    """Every configured guild - used to re-register persistent views on startup."""
     try:
         cur = conn.execute(
             "SELECT guild_id, channel_id, role_id FROM verification_config WHERE enabled=1")
@@ -1093,9 +1044,7 @@ def get_all_verification_configs(conn) -> list:
     return cur.fetchall()
 
 
-# ---------------------------------------------------------------------------
 # Guild branding
-# ---------------------------------------------------------------------------
 
 DEFAULT_BRAND_COLOR = 0x5865F2  # Discord blurple
 

@@ -2,18 +2,18 @@
 Tests for db_handler.py
 
 Covers every table and every function:
-  - Users (2FA)         — insert, check, get_secret, verify, delete
-  - Guilds              — init_guild, check_guild, delete_guild, log/event channels,
+  - Users (2FA)         - insert, check, get_secret, verify, delete
+  - Guilds              - init_guild, check_guild, delete_guild, log/event channels,
                           link_filter toggle, panic_active, announce_timeout
-  - Webhook settings    — check_webhook, set_webhook_parameters, temp_disable CRUD
-  - Trusted members     — authorise, deauthorise, check, get
-  - Announcement channels — insert, delete, get
-  - Link whitelist      — add, remove, get (domain + specific, duplicate prevention)
-  - Link filter exempt  — add, remove, is_exempt, is_exempt_by_roles, get_all
-  - Safe roles          — add, remove, is_safe, get
-  - Link managers       — add, remove, is_manager, get
-  - Panic backups       — save role/channel backup, get, clear
-  - delete_guild cascade — verifies all child records are removed
+  - Webhook settings    - check_webhook, set_webhook_parameters, temp_disable CRUD
+  - Trusted members     - authorise, deauthorise, check, get
+  - Announcement channels - insert, delete, get
+  - Link whitelist      - add, remove, get (domain + specific, duplicate prevention)
+  - Link filter exempt  - add, remove, is_exempt, is_exempt_by_roles, get_all
+  - Safe roles          - add, remove, is_safe, get
+  - Link managers       - add, remove, is_manager, get
+  - Panic backups       - save role/channel backup, get, clear
+  - delete_guild cascade - verifies all child records are removed
 """
 
 import pytest
@@ -25,9 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import db_handler
 
 
-# ---------------------------------------------------------------------------
 # Shared IDs
-# ---------------------------------------------------------------------------
 
 USER_A    = 100000000000000001
 USER_B    = 100000000000000002
@@ -39,17 +37,13 @@ ROLE_1    = 400000000000000001
 ROLE_2    = 400000000000000002
 
 
-# ---------------------------------------------------------------------------
 # Helper
-# ---------------------------------------------------------------------------
 
 def _insert_guild(conn, guild_id=GUILD_1, log_channel=CHANNEL_1):
     db_handler.init_guild(conn, guild_id, log_channel=log_channel)
 
 
-# ---------------------------------------------------------------------------
 # Users (2FA)
-# ---------------------------------------------------------------------------
 
 class TestUsers:
     def test_insert_and_check(self, in_memory_db):
@@ -89,9 +83,7 @@ class TestUsers:
             db_handler.insert_user(in_memory_db, (USER_A, "OTHER", 0))
 
 
-# ---------------------------------------------------------------------------
 # Guilds
-# ---------------------------------------------------------------------------
 
 class TestGuilds:
     def test_init_guild_and_check(self, in_memory_db):
@@ -156,9 +148,7 @@ class TestGuilds:
         assert db_handler.check_guild(in_memory_db, GUILD_1) is False
 
 
-# ---------------------------------------------------------------------------
 # Webhook settings
-# ---------------------------------------------------------------------------
 
 class TestWebhooks:
     def test_webhook_protection_default_on(self, in_memory_db):
@@ -197,9 +187,7 @@ class TestWebhooks:
         assert db_handler.get_webhook_temp_disable(in_memory_db, GUILD_1) is None
 
 
-# ---------------------------------------------------------------------------
 # Trusted members (Announcers)
-# ---------------------------------------------------------------------------
 
 class TestTrustedMembers:
     def test_authorise_and_check(self, in_memory_db):
@@ -231,9 +219,7 @@ class TestTrustedMembers:
             db_handler.authorise_member(in_memory_db, (GUILD_1, USER_A))
 
 
-# ---------------------------------------------------------------------------
 # Announcement channels
-# ---------------------------------------------------------------------------
 
 class TestAnnouncementChannels:
     def test_insert_and_get(self, in_memory_db):
@@ -256,9 +242,7 @@ class TestAnnouncementChannels:
         assert db_handler.get_channels(in_memory_db, GUILD_1) == []
 
 
-# ---------------------------------------------------------------------------
 # Link whitelist
-# ---------------------------------------------------------------------------
 
 class TestLinkWhitelist:
     def test_add_domain_entry(self, in_memory_db):
@@ -297,9 +281,7 @@ class TestLinkWhitelist:
         assert db_handler.get_link_whitelist(in_memory_db, GUILD_1) == []
 
 
-# ---------------------------------------------------------------------------
 # Link filter entity whitelist (exempt channels/roles/users/categories)
-# ---------------------------------------------------------------------------
 
 class TestFilterExemptions:
     def test_add_channel_exempt(self, in_memory_db):
@@ -356,9 +338,7 @@ class TestFilterExemptions:
         assert db_handler.is_filter_exempt(in_memory_db, GUILD_1, "user", USER_A) is False
 
 
-# ---------------------------------------------------------------------------
 # Safe roles
-# ---------------------------------------------------------------------------
 
 class TestSafeRoles:
     def test_add_safe_role(self, in_memory_db):
@@ -390,9 +370,51 @@ class TestSafeRoles:
         assert db_handler.is_safe_role(in_memory_db, GUILD_2, ROLE_1) is False
 
 
-# ---------------------------------------------------------------------------
+# Name filter exempt roles
+
+class TestNameFilterExemptRoles:
+    def test_add_returns_true_and_is_stored(self, in_memory_db):
+        assert db_handler.add_name_filter_exempt_role(
+            in_memory_db, GUILD_1, ROLE_1, USER_A) is True
+        assert ROLE_1 in db_handler.get_name_filter_exempt_roles(in_memory_db, GUILD_1)
+
+    def test_duplicate_returns_false(self, in_memory_db):
+        db_handler.add_name_filter_exempt_role(in_memory_db, GUILD_1, ROLE_1, USER_A)
+        assert db_handler.add_name_filter_exempt_role(
+            in_memory_db, GUILD_1, ROLE_1, USER_A) is False
+
+    def test_remove(self, in_memory_db):
+        db_handler.add_name_filter_exempt_role(in_memory_db, GUILD_1, ROLE_1, USER_A)
+        assert db_handler.remove_name_filter_exempt_role(
+            in_memory_db, GUILD_1, ROLE_1) is True
+        assert ROLE_1 not in db_handler.get_name_filter_exempt_roles(in_memory_db, GUILD_1)
+
+    def test_remove_nonexistent_returns_false(self, in_memory_db):
+        assert db_handler.remove_name_filter_exempt_role(
+            in_memory_db, GUILD_1, 9999) is False
+
+    def test_empty_by_default(self, in_memory_db):
+        assert db_handler.get_name_filter_exempt_roles(in_memory_db, GUILD_1) == set()
+
+    def test_guild_isolation(self, in_memory_db):
+        db_handler.add_name_filter_exempt_role(in_memory_db, GUILD_1, ROLE_1, USER_A)
+        assert ROLE_1 not in db_handler.get_name_filter_exempt_roles(in_memory_db, GUILD_2)
+
+    def test_add_invalidates_cache(self, in_memory_db):
+        """A stale cache would keep scanning a role the owner just exempted."""
+        db_handler.get_name_filter_exempt_roles(in_memory_db, GUILD_1)  # prime
+        db_handler.add_name_filter_exempt_role(in_memory_db, GUILD_1, ROLE_1, USER_A)
+        assert ROLE_1 in db_handler.get_name_filter_exempt_roles(in_memory_db, GUILD_1)
+
+    def test_remove_invalidates_cache(self, in_memory_db):
+        """The dangerous direction: a stale cache would keep a role exempt."""
+        db_handler.add_name_filter_exempt_role(in_memory_db, GUILD_1, ROLE_1, USER_A)
+        db_handler.get_name_filter_exempt_roles(in_memory_db, GUILD_1)  # prime
+        db_handler.remove_name_filter_exempt_role(in_memory_db, GUILD_1, ROLE_1)
+        assert ROLE_1 not in db_handler.get_name_filter_exempt_roles(in_memory_db, GUILD_1)
+
+
 # Link managers
-# ---------------------------------------------------------------------------
 
 
 class TestLinkManagers:
@@ -428,9 +450,7 @@ class TestLinkManagers:
         assert db_handler.is_link_manager(in_memory_db, GUILD_1, USER_A) is False
 
 
-# ---------------------------------------------------------------------------
 # Panic backups
-# ---------------------------------------------------------------------------
 
 class TestPanicBackups:
     def test_save_and_get_role_backup(self, in_memory_db):
@@ -465,9 +485,7 @@ class TestPanicBackups:
         assert db_handler.get_panic_channel_backups(in_memory_db, GUILD_1) == []
 
 
-# ---------------------------------------------------------------------------
 # delete_guild cascade
-# ---------------------------------------------------------------------------
 
 class TestDeleteGuildCascade:
     def test_cascade_removes_trusted_members(self, in_memory_db):
@@ -506,6 +524,12 @@ class TestDeleteGuildCascade:
         db_handler.delete_guild(in_memory_db, GUILD_1)
         assert db_handler.get_webhook_temp_disable(in_memory_db, GUILD_1) is None
 
+    def test_cascade_removes_name_filter_exempt_roles(self, in_memory_db):
+        _insert_guild(in_memory_db)
+        db_handler.add_name_filter_exempt_role(in_memory_db, GUILD_1, ROLE_1, USER_A)
+        db_handler.delete_guild(in_memory_db, GUILD_1)
+        assert db_handler.get_name_filter_exempt_roles(in_memory_db, GUILD_1) == set()
+
     def test_cascade_does_not_affect_other_guilds(self, in_memory_db):
         _insert_guild(in_memory_db, guild_id=GUILD_1)
         _insert_guild(in_memory_db, guild_id=GUILD_2, log_channel=CHANNEL_2)
@@ -514,9 +538,7 @@ class TestDeleteGuildCascade:
         assert db_handler.is_link_manager(in_memory_db, GUILD_2, USER_A) is True
 
 
-# ---------------------------------------------------------------------------
-# init_guild — announcement channel auto-registered in channel_table
-# ---------------------------------------------------------------------------
+# init_guild - announcement channel auto-registered in channel_table
 
 class TestInitGuild:
     def test_announcement_channel_auto_added(self, in_memory_db):
@@ -529,7 +551,24 @@ class TestInitGuild:
         assert db_handler.get_channels(in_memory_db, GUILD_1) == []
 
     def test_duplicate_init_raises(self, in_memory_db):
-        """SQLite PRIMARY KEY constraint — second init must raise."""
+        """SQLite PRIMARY KEY constraint - second init must raise."""
         db_handler.init_guild(in_memory_db, GUILD_1, log_channel=CHANNEL_1)
         with pytest.raises(Exception):
             db_handler.init_guild(in_memory_db, GUILD_1, log_channel=CHANNEL_2)
+
+
+# Audit-log tamper detection
+#
+# Deleting audit entries has to leave one of its own, and losing the log
+# channel has to reach the owner some other way - it cannot be reported into
+# the channel that just disappeared.
+
+class TestLogChannelCanBeCleared:
+    def test_set_log_channel_accepts_none(self, in_memory_db):
+        """on_guild_channel_delete clears the pointer so it can't dangle."""
+        gid = 555000000000000001
+        db_handler.init_guild(in_memory_db, gid, 999000000000000001)
+        assert db_handler.get_log_channel(in_memory_db, gid) == 999000000000000001
+
+        db_handler.set_log_channel(in_memory_db, gid, None)
+        assert db_handler.get_log_channel(in_memory_db, gid) is None

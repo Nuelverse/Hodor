@@ -1,54 +1,3 @@
-"""
-Member Verification — captcha gate before a member receives the verified role.
-
-Flow:
-  /verify-setup  posts a panel with a persistent [Verify] button.
-  A member clicks it and gets an EPHEMERAL captcha image plus a numeric keypad.
-  Digits accumulate, Submit checks the answer, success grants the role.
-
-Commands:
-  /verify-setup       — Owner + 2FA: configure channel + role and post the panel
-  /verify-panel       — Owner + 2FA: re-post the panel (e.g. after deleting it)
-  /verify-toggle      — Owner + 2FA: enable/disable without losing the config
-  /verify-log-channel — Owner + 2FA: send join logs to their own channel
-  /verify-status      — Any keycard: view the current configuration
-
-Logging:
-  Verification events default to the guild's main log channel. Point them at a
-  dedicated join channel with /verify-log-channel — join traffic is high-volume
-  and low-severity, and mixing it into the security log buries the entries that
-  actually need attention. Three events are recorded: a successful
-  verification, a member blocked for having too new an account, and a member
-  hitting the attempt limit. The latter two clustering together is one of the
-  clearest raid signals available.
-
-DEFENCE IN DEPTH
-----------------
-The captcha is one signal, not the whole gate. Four layers run per attempt:
-
-  1. Account age    — most raid accounts are hours old; this filters more
-                      automation than the captcha itself, for one comparison.
-  2. Image-only     — the problems exist only in pixels (see captcha.py), so a
-     challenge         script must OCR rather than read message content.
-  3. Response time  — seven Discord round-trips cannot complete believably
-                      fast; instant solves are automation.
-  4. Attempt limits — per-user cooldown, so a 10^6 answer space cannot be
-                      walked.
-
-PERSISTENT VIEW
----------------
-The panel button uses a fixed custom_id and timeout=None, and is re-registered
-in on_ready via bot.add_view(). Without that, every restart would leave a dead
-button that reports "This interaction failed".
-
-EPHEMERAL ATTACHMENT LIMIT
---------------------------
-Discord does not allow attaching a NEW file when editing an ephemeral message.
-The image is therefore sent once, and keypad presses edit only the text and the
-view. A wrong answer ends the session rather than redrawing in place — the
-member clicks Verify again for a fresh challenge.
-"""
-
 import asyncio
 import time
 
@@ -63,24 +12,14 @@ import permissions
 import two_factor_helper
 
 
-PANEL_BUTTON_ID = "discord_shield:verify_panel"
+PANEL_BUTTON_ID = "hodor:verify_panel"
+LEGACY_PANEL_BUTTON_IDS = ("discord_shield:verify_panel",)
 
 CAPTCHA_TTL = 180           # seconds a challenge stays valid
 MIN_SOLVE_SECONDS = 2.5     # faster than this is not a human pressing buttons
 MAX_ATTEMPTS = 5            # failed attempts before cooldown
 ATTEMPT_WINDOW = 600        # cooldown window, seconds
 
-# Rendering a captcha costs ~12ms of CPU. Two guards keep a mass join from
-# turning that into an outage:
-#
-#   ISSUE_COOLDOWN — one challenge per user per this many seconds. Without it,
-#       a single account could hold the Verify button and mint unlimited
-#       captchas, which is a cheap way to burn CPU. The existing attempt limit
-#       only counts FAILURES, so it never fired on this path.
-#
-#   _RENDER_SLOTS — caps how many renders happen at once. Generation is moved
-#       off the event loop, but unbounded threads during a 500-member raid
-#       would thrash rather than help.
 ISSUE_COOLDOWN = 8
 _MAX_CONCURRENT_RENDERS = 4
 _RENDER_SLOTS = asyncio.Semaphore(_MAX_CONCURRENT_RENDERS)
@@ -106,9 +45,7 @@ class _Session:
         return len(self.answer)
 
 
-# ---------------------------------------------------------------------------
 # Keypad buttons
-# ---------------------------------------------------------------------------
 
 class _DigitButton(discord.ui.Button):
     def __init__(self, digit: str, row: int):
@@ -151,26 +88,27 @@ class CaptchaKeypadView(discord.ui.View):
         self.add_item(_SubmitButton(row=3))
 
 
-# ---------------------------------------------------------------------------
 # Persistent panel
-# ---------------------------------------------------------------------------
 
 class VerifyPanelView(discord.ui.View):
     """The permanent [Verify] button. Must survive restarts, hence timeout=None."""
 
-    def __init__(self, cog):
+    def __init__(self, cog, custom_id: str = PANEL_BUTTON_ID):
         super().__init__(timeout=None)
         self.cog = cog
+        button = discord.ui.Button(
+            label="Verify",
+            style=discord.ButtonStyle.primary,
+            custom_id=custom_id,
+        )
+        button.callback = self._on_click
+        self.add_item(button)
 
-    @discord.ui.button(label="Verify", style=discord.ButtonStyle.primary,
-                       custom_id=PANEL_BUTTON_ID)
-    async def verify(self, button: discord.ui.Button, interaction: discord.Interaction):
+    async def _on_click(self, interaction: discord.Interaction):
         await self.cog.on_panel_click(interaction)
 
 
-# ---------------------------------------------------------------------------
 # Cog
-# ---------------------------------------------------------------------------
 
 class Verification(commands.Cog):
     def __init__(self, bot):
@@ -183,9 +121,7 @@ class Verification(commands.Cog):
         self._last_issued: dict[tuple[int, int], float] = {}
         self._view_registered = False
 
-    # ------------------------------------------------------------------
-    # Startup — re-register the persistent view
-    # ------------------------------------------------------------------
+    # Startup - re-register the persistent view
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -193,13 +129,13 @@ class Verification(commands.Cog):
             return
         self._view_registered = True
         self.bot.add_view(VerifyPanelView(self))
+        for legacy_id in LEGACY_PANEL_BUTTON_IDS:
+            self.bot.add_view(VerifyPanelView(self, custom_id=legacy_id))
         configured = db_handler.get_all_verification_configs(self.bot.CONN)
         if configured:
             print(f"[verify] Persistent panel re-registered for {len(configured)} guild(s).")
 
-    # ------------------------------------------------------------------
     # Helpers
-    # ------------------------------------------------------------------
 
     def _rate_limited(self, key) -> bool:
         now = time.monotonic()
@@ -230,23 +166,14 @@ class Verification(commands.Cog):
         return db_handler.get_guild_branding(self.bot.CONN, guild_id)['color']
 
     def _join_log_channel(self, guild, cfg=None):
-        """
-        Where verification events go.
-
-        A dedicated join channel if one is configured, otherwise None so
-        logger.log_action falls back to the guild's main log channel. Join
-        traffic is high-volume and low-severity; keeping it separate stops it
-        burying the security entries an admin actually needs to see.
-        """
+        
         if cfg is None:
             cfg = db_handler.get_verification_config(self.bot.CONN, guild.id)
         if not cfg or not cfg.get('log_channel_id'):
             return None
         return self.bot.get_channel(cfg['log_channel_id'])
 
-    # ------------------------------------------------------------------
-    # Panel click — issue a challenge
-    # ------------------------------------------------------------------
+    # Panel click - issue a challenge
 
     async def on_panel_click(self, interaction: discord.Interaction):
         guild = interaction.guild
@@ -272,7 +199,7 @@ class Verification(commands.Cog):
                 "You are already verified.", ephemeral=True)
             return
 
-        # Layer 1 — account age
+        # Layer 1 - account age
         min_age_hours = cfg['min_account_age'] or 0
         if min_age_hours:
             age_hours = (discord.utils.utcnow() - member.created_at).total_seconds() / 3600
@@ -316,7 +243,7 @@ class Verification(commands.Cog):
             )
             return
 
-        # Throttle issuance, not just failures — see ISSUE_COOLDOWN.
+        # Throttle issuance, not just failures - see ISSUE_COOLDOWN.
         last_issued = self._last_issued.get(key, 0.0)
         wait = ISSUE_COOLDOWN - (time.monotonic() - last_issued)
         if wait > 0:
@@ -328,13 +255,8 @@ class Verification(commands.Cog):
 
         self._prune_sessions()
 
-        # Defer first: rendering is off-thread but a burst still queues behind
-        # the semaphore, and an un-acknowledged interaction expires after 3s.
         await interaction.response.defer(ephemeral=True)
 
-        # Pillow rendering is CPU-bound (~12ms). On the event loop, 100
-        # simultaneous clicks froze the whole bot for over a second — no
-        # messages scanned, no joins handled. to_thread keeps the loop free.
         async with _RENDER_SLOTS:
             buffer, answer = await asyncio.to_thread(captcha_lib.generate)
 
@@ -352,9 +274,7 @@ class Verification(commands.Cog):
             ephemeral=True,
         )
 
-    # ------------------------------------------------------------------
     # Keypad handlers
-    # ------------------------------------------------------------------
 
     async def _active_session(self, interaction: discord.Interaction):
         key = (interaction.guild_id, interaction.user.id)
@@ -414,7 +334,7 @@ class Verification(commands.Cog):
 
         self._sessions.pop(key, None)
 
-        # Layer 3 — nobody presses seven buttons this fast
+        # Layer 3 - nobody presses seven buttons this fast
         if elapsed < MIN_SOLVE_SECONDS:
             self._record_failure(key)
             await interaction.response.edit_message(
@@ -478,9 +398,7 @@ class Verification(commands.Cog):
             channel=self._join_log_channel(guild, cfg),
         )
 
-    # ------------------------------------------------------------------
     # /verify-setup
-    # ------------------------------------------------------------------
 
     async def _post_panel(self, channel, guild) -> discord.Message:
         branding = db_handler.get_guild_branding(self.bot.CONN, guild.id)
@@ -532,7 +450,7 @@ class Verification(commands.Cog):
             await ctx.respond("Incorrect 2FA code.", ephemeral=True)
             return
 
-        # The bot must outrank the role to be able to grant it — check now
+        # The bot must outrank the role to be able to grant it - check now
         # rather than letting every member discover it at the last step.
         me = ctx.guild.me
         if me is None or role >= me.top_role:
@@ -585,9 +503,7 @@ class Verification(commands.Cog):
             },
             level='success')
 
-    # ------------------------------------------------------------------
     # /verify-log-channel
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.slash_command(
@@ -634,9 +550,7 @@ class Verification(commands.Cog):
             details={"Destination": target},
             level='info')
 
-    # ------------------------------------------------------------------
     # /verify-panel
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.cooldown(1, 10, commands.BucketType.guild)
@@ -675,9 +589,7 @@ class Verification(commands.Cog):
         db_handler.set_verification_panel(self.bot.CONN, ctx.guild.id, panel.id)
         await ctx.respond(f"Panel re-posted in {channel.mention}.", ephemeral=True)
 
-    # ------------------------------------------------------------------
     # /verify-toggle
-    # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.slash_command(
@@ -708,9 +620,7 @@ class Verification(commands.Cog):
             self.bot, ctx.guild, f"Verification {label}", ctx.author,
             level='success' if new_state else 'warning')
 
-    # ------------------------------------------------------------------
-    # /verify-status  (view-only — any keycard)
-    # ------------------------------------------------------------------
+    # /verify-status  (view-only - any keycard)
 
     @commands.guild_only()
     @commands.slash_command(

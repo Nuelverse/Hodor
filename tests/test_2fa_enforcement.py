@@ -6,8 +6,8 @@ Every command that accepts a 'code' parameter must:
   - NOT send that message when verify_code returns True.
 
 Tested cogs:
-  Admin      — set_logs, add_channel, remove_channel, change_timeout
-  Moderation — role, bulk_role, new_role, rename_channel, toggle_channel,
+  Admin      - set_logs, add_channel, remove_channel, change_timeout
+  Moderation - role, bulk_role, new_role, rename_channel, toggle_channel,
                sync_channels, restrict_channel, lock_threads, export,
                export_category, list_overrides
 """
@@ -23,9 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 WRONG_CODE = 0
 RIGHT_CODE = 123456
